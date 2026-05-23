@@ -18,12 +18,17 @@ dotenv.config();
 
 const __dirname = path.resolve();
 
-// YouTube OAuth2 Config
-const oauth2Client = new OAuth2Client(
-  process.env.YOUTUBE_CLIENT_ID,
-  process.env.YOUTUBE_CLIENT_SECRET,
-  process.env.YOUTUBE_REDIRECT_URI || "http://localhost:3000/api/auth/youtube/callback"
-);
+function getOAuthClient(userId: number) {
+  const settings = db.prepare('SELECT youtube_client_id, youtube_client_secret FROM settings WHERE user_id = ?').get(userId) as any;
+  if (!settings || !settings.youtube_client_id || !settings.youtube_client_secret) {
+    throw new Error("YouTube Client ID dan Secret belum diatur. Silakan isi di menu Pengaturan API.");
+  }
+  return new OAuth2Client(
+    settings.youtube_client_id,
+    settings.youtube_client_secret,
+    "http://localhost:3000/api/auth/youtube/callback"
+  );
+}
 
 // Helper for history
 function saveToHistory(userId: number, entry: any) {
@@ -660,7 +665,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         const tokenRow = db.prepare('SELECT tokens FROM tokens WHERE user_id = ?').get(user.id) as any;
         if (!tokenRow) continue;
 
-        const userOauth = new OAuth2Client(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+        const userOauth = getOAuthClient(user.id);
         userOauth.setCredentials(JSON.parse(tokenRow.tokens));
         const youtube = google.youtube({ version: 'v3', auth: userOauth });
 
@@ -822,22 +827,29 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   // YouTube OAuth
   app.get("/api/auth/youtube", authMiddleware, (req: any, res) => {
-    const url = oauth2Client.generateAuthUrl({
-      access_type: "offline",
-      scope: ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"],
-      prompt: "consent",
-      state: req.user.id.toString()
-    });
-    res.json({ url });
+    try {
+      const oauthClient = getOAuthClient(req.user.id);
+      const url = oauthClient.generateAuthUrl({
+        access_type: "offline",
+        scope: ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"],
+        prompt: "consent",
+        state: req.user.id.toString()
+      });
+      res.json({ url });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
   });
 
   app.get("/api/auth/youtube/callback", async (req, res) => {
     const { code, state: userId } = req.query;
     try {
-      const { tokens } = await oauth2Client.getToken(code as string);
+      if (!userId) throw new Error("No user ID in state");
+      const oauthClient = getOAuthClient(Number(userId));
+      const { tokens } = await oauthClient.getToken(code as string);
       db.prepare('INSERT OR REPLACE INTO tokens (user_id, tokens) VALUES (?, ?)').run(Number(userId), JSON.stringify(tokens));
-      res.redirect(`${process.env.APP_URL || ""}/?connected=youtube`);
-    } catch (error) { res.redirect(`${process.env.APP_URL || ""}/?error=auth_failed`); }
+      res.redirect(`http://localhost:3000/?connected=youtube`);
+    } catch (error) { res.redirect(`http://localhost:3000/?error=auth_failed`); }
   });
 
   // Protected API
@@ -1028,7 +1040,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
       const tokenRow = db.prepare('SELECT tokens FROM tokens WHERE user_id = ?').get(req.user.id) as any;
       if (!tokenRow) return res.status(401).json({ error: "YouTube not connected" });
-      const userOauth = new OAuth2Client(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+      const userOauth = getOAuthClient(req.user.id);
       userOauth.setCredentials(JSON.parse(tokenRow.tokens));
       const startSec = parseFloat(start as string);
       const endSec = parseFloat(end as string);
@@ -1240,7 +1252,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
   // === ENDPOINT: Settings (API Keys) ===
   app.get("/api/settings", authMiddleware, (req: any, res) => {
     try {
-      const settings = db.prepare('SELECT gemini_key, openai_key, groq_key FROM settings WHERE user_id = ?').get(req.user.id) || {};
+      const settings = db.prepare('SELECT gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret FROM settings WHERE user_id = ?').get(req.user.id) || {};
       res.json(settings);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1249,15 +1261,17 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/settings", authMiddleware, express.json(), (req: any, res) => {
     try {
-      const { gemini_key, openai_key, groq_key } = req.body;
+      const { gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret } = req.body;
       db.prepare(`
-        INSERT INTO settings (user_id, gemini_key, openai_key, groq_key)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO settings (user_id, gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
         gemini_key = excluded.gemini_key,
         openai_key = excluded.openai_key,
-        groq_key = excluded.groq_key
-      `).run(req.user.id, gemini_key || '', openai_key || '', groq_key || '');
+        groq_key = excluded.groq_key,
+        youtube_client_id = excluded.youtube_client_id,
+        youtube_client_secret = excluded.youtube_client_secret
+      `).run(req.user.id, gemini_key || '', openai_key || '', groq_key || '', youtube_client_id || '', youtube_client_secret || '');
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

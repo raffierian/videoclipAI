@@ -227,11 +227,16 @@ export default function App() {
       const res = await authedFetch('/api/auth/youtube');
       if (!res) return;
       const data = await res.json();
+      if (!res.ok && data.error) {
+        showToast(data.error, 'error');
+        return;
+      }
       if (data.url) {
         window.location.href = data.url;
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to connect YouTube:", e);
+      showToast("Gagal terhubung ke YouTube", 'error');
     }
   };
 

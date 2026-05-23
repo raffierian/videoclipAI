@@ -66,6 +66,10 @@ const initDb = () => {
       activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  
+  // Safe migrations for new columns
+  try { db.exec("ALTER TABLE settings ADD COLUMN youtube_client_id TEXT;"); } catch (e) { }
+  try { db.exec("ALTER TABLE settings ADD COLUMN youtube_client_secret TEXT;"); } catch (e) { }
 };
 
 initDb();
