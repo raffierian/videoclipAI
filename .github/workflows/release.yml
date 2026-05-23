@@ -14,8 +14,10 @@ jobs:
         include:
           - os: windows-latest
             yt_url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+            yt_file: "yt-dlp.exe"
           - os: macos-latest
             yt_url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+            yt_file: "yt-dlp"
 
     steps:
       - name: Check out Git repository
@@ -28,8 +30,18 @@ jobs:
 
       - name: Install dependencies
         env:
-          YOUTUBE_DL_HOST: ${{ matrix.yt_url }}
+          YOUTUBE_DL_SKIP_DOWNLOAD: "true"
         run: npm install
+
+      - name: Manually download yt-dlp binary
+        run: |
+          mkdir -p node_modules/youtube-dl-exec/bin
+          curl -L "${{ matrix.yt_url }}" -o "node_modules/youtube-dl-exec/bin/${{ matrix.yt_file }}"
+        shell: bash
+
+      - name: Set executable permission for yt-dlp (Mac)
+        if: matrix.os == 'macos-latest'
+        run: chmod +x "node_modules/youtube-dl-exec/bin/${{ matrix.yt_file }}"
 
       - name: Build and Publish App
         env:
