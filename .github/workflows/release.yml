@@ -11,7 +11,11 @@ jobs:
     
     strategy:
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            yt_url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+          - os: macos-latest
+            yt_url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
 
     steps:
       - name: Check out Git repository
@@ -24,7 +28,7 @@ jobs:
 
       - name: Install dependencies
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YOUTUBE_DL_HOST: ${{ matrix.yt_url }}
         run: npm install
 
       - name: Build and Publish App
