@@ -1,7 +1,7 @@
 {
   "name": "viralclip-ai-desktop",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -71,7 +71,9 @@
       "scripts/**/*"
     ],
     "asarUnpack": [
-      "scripts/**/*"
+      "scripts/**/*",
+      "node_modules/youtube-dl-exec/**/*",
+      "node_modules/ffmpeg-static/**/*"
     ],
     "win": {
       "target": "nsis"

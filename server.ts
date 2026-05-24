@@ -1,7 +1,7 @@
 import express from "express";
 import { WebSocketServer } from 'ws';
 import path from "path";
-import youtubedl from "youtube-dl-exec";
+import youtubedlPkg from "youtube-dl-exec";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegStatic from "ffmpeg-static";
 import contentDisposition from "content-disposition";
@@ -21,6 +21,22 @@ dotenv.config();
 import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const isPackaged = __dirname.includes('app.asar');
+
+// Resolve ffmpeg path
+let resolvedFfmpegPath = ffmpegStatic as string;
+if (isPackaged) resolvedFfmpegPath = resolvedFfmpegPath.replace('app.asar', 'app.asar.unpacked');
+ffmpeg.setFfmpegPath(resolvedFfmpegPath);
+
+// Resolve yt-dlp path
+let ytdlpPath = '';
+if (isPackaged) {
+  ytdlpPath = path.join(__dirname, '..', '..', 'app.asar.unpacked', 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp.exe');
+} else {
+  ytdlpPath = path.join(__dirname, '..', 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp.exe');
+}
+const youtubedl = youtubedlPkg.create(ytdlpPath);
 
 function getOAuthClient(userId: number) {
   const settings = db.prepare('SELECT youtube_client_id, youtube_client_secret FROM settings WHERE user_id = ?').get(userId) as any;
@@ -276,7 +292,7 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  ffmpeg.setFfmpegPath(ffmpegStatic as string);
+  ffmpeg.setFfmpegPath(resolvedFfmpegPath);
 
   let watcherStatus = {
     isChecking: false,
@@ -576,7 +592,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       noWarnings: true,
       noCheckCertificates: true,
       extractorArgs: 'youtube:player_client=android',
-      ffmpegLocation: ffmpegStatic as string,
+      ffmpegLocation: resolvedFfmpegPath,
     } as any);
 
     // 2. Re-encode portrait (9:16) with face tracking + TikTok subtitles
@@ -899,7 +915,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       const info = await youtubedl(req.query.url as string, { dumpJson: true, noWarnings: true, noCheckCertificates: true, extractorArgs: 'youtube:player_client=android' } as any);
       const data = typeof info === "string" ? JSON.parse(info) : info;
       res.json({ title: data.title, description: data.description, uploader: data.uploader, duration: data.duration });
-    } catch (err: any) { res.status(500).json({ error: "Failed to fetch video metadata" }); }
+    } catch (err: any) { 
+      console.error("YOUTUBE-DL ERROR:", err);
+      res.status(500).json({ error: "Failed to fetch video metadata" }); 
+    }
   });
 
   app.get("/api/transcript", authMiddleware, async (req, res) => {
@@ -968,7 +987,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         noWarnings: true,
         noCheckCertificates: true,
         extractorArgs: 'youtube:player_client=android',
-        ffmpegLocation: ffmpegStatic as string
+        ffmpegLocation: resolvedFfmpegPath
       } as any);
 
       const style = (captionStyle === 'tiktok') ? 'tiktok' : 'normal';
@@ -1040,7 +1059,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       const info = await youtubedl(req.query.url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any);
       const videoUrl = (info as any).url;
       res.setHeader('Content-Type', 'image/jpeg');
-      ffmpeg(videoUrl).setFfmpegPath(ffmpegStatic as string).seekInput(Number(req.query.time) || 0).frames(1).format('image2').pipe(res, { end: true });
+      ffmpeg(videoUrl).setFfmpegPath(resolvedFfmpegPath).seekInput(Number(req.query.time) || 0).frames(1).format('image2').pipe(res, { end: true });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
   });
 
@@ -1070,7 +1089,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         noWarnings: true,
         noCheckCertificates: true,
         extractorArgs: 'youtube:player_client=android',
-        ffmpegLocation: ffmpegStatic as string
+        ffmpegLocation: resolvedFfmpegPath
       } as any);
 
       const tempPath = path.join(os.tmpdir(), `temp_upload_${Date.now()}.mp4`);
