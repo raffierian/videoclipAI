@@ -16,10 +16,15 @@ function createWindow() {
     }
   })
 
-  const serverPath = path.join(__dirname, '..', 'server.ts')
-  serverProcess = spawn('npx.cmd', ['tsx', serverPath], {
+  const serverPath = path.join(__dirname, '..', 'dist-server', 'server.js')
+  const { fork } = require('child_process')
+  serverProcess = fork(serverPath, [], {
     cwd: path.join(__dirname, '..'),
-    shell: true
+    env: {
+      ...process.env,
+      NODE_ENV: app.isPackaged ? 'production' : 'development'
+    },
+    stdio: 'pipe'
   })
 
   serverProcess.stdout.on('data', (data) => {

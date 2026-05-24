@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npx esbuild server.ts --bundle --platform=node --packages=external --outdir=dist-server --format=esm",
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "electron .",
@@ -65,9 +65,13 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "dist-server/**/*",
       "server.ts",
       "lib/**/*",
-      "resources/scripts/**/*"
+      "scripts/**/*"
+    ],
+    "asarUnpack": [
+      "scripts/**/*"
     ],
     "win": {
       "target": "nsis"

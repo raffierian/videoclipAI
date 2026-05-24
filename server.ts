@@ -129,14 +129,20 @@ function getSubtitleStyle(captionStyle: 'normal' | 'tiktok'): string {
 import { spawn } from 'child_process';
 
 const venvPy = (() => {
-  const p = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
+  const isPackaged = __dirname.includes('app.asar');
+  const appRoot = isPackaged ? path.join(__dirname, '..', '..') : path.join(__dirname);
+  const p = path.join(appRoot, '.venv', 'Scripts', 'python.exe');
   return fs.existsSync(p) ? p : 'python';
 })();
 
 function spawnPython(args: string[], timeoutMs = 120000): Promise<string | null> {
   return new Promise((resolve) => {
-    const scriptPath = path.join(__dirname, 'scripts', args[0]);
-    if (!fs.existsSync(scriptPath)) { resolve(null); return; }
+    const isPackaged = __dirname.includes('app.asar');
+    const scriptsBase = isPackaged 
+      ? path.join(__dirname, '..', '..', 'app.asar.unpacked', 'scripts')
+      : path.join(__dirname, 'scripts');
+    const scriptPath = path.join(scriptsBase, args[0]);
+    if (!fs.existsSync(scriptPath)) { console.error('Script not found:', scriptPath); resolve(null); return; }
     let stdout = '';
     const proc = spawn(venvPy, [scriptPath, ...args.slice(1)]);
     proc.stdout.on('data', (d: Buffer) => stdout += d.toString());
