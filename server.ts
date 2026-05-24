@@ -1,5 +1,5 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
+import { WebSocketServer } from 'ws';
 import path from "path";
 import youtubedl from "youtube-dl-exec";
 import ffmpeg from "fluent-ffmpeg";
@@ -1290,6 +1290,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({ server: { middlewareMode: true, hmr: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
