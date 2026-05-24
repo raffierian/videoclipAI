@@ -11,6 +11,8 @@ import fs from "fs";
 import os from "os";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
+import nodeMachineId from "node-machine-id";
+const { machineIdSync } = nodeMachineId;
 import db from "./lib/db";
 import { register, login, authMiddleware } from "./lib/auth";
 
@@ -1175,7 +1177,6 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
   // === ENDPOINT: License System ===
   app.get("/api/license/status", async (req, res) => {
     try {
-      const { machineIdSync } = await import('node-machine-id');
       const hwId = machineIdSync();
       const licenseRec = db.prepare('SELECT license_key FROM app_license WHERE id = 1').get() as any;
       if (!licenseRec || !licenseRec.license_key) {
@@ -1211,7 +1212,6 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       const { license_key } = req.body;
       if (!license_key) return res.status(400).json({ error: "License key is required" });
 
-      const { machineIdSync } = await import('node-machine-id');
       const hwId = machineIdSync();
 
       const fetchResponse = await fetch('https://rhwebs.com/api/mobile/licenses/validate', {
