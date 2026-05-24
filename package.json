@@ -1,7 +1,7 @@
 {
   "name": "viralclip-ai-desktop",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.15",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -57,6 +57,7 @@
   },
   "main": "electron/main.cjs",
   "build": {
+    "electronVersion": "40.10.1",
     "appId": "com.viralclip.app",
     "productName": "ViralClip AI",
     "directories": {
@@ -68,10 +69,12 @@
       "dist-server/**/*",
       "server.ts",
       "lib/**/*",
-      "scripts/**/*"
+      "scripts/**/*",
+      "python_env/**/*"
     ],
     "asarUnpack": [
       "scripts/**/*",
+      "python_env/**/*",
       "node_modules/youtube-dl-exec/**/*",
       "node_modules/ffmpeg-static/**/*"
     ],

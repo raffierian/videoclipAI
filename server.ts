@@ -36,7 +36,38 @@ if (isPackaged) {
 } else {
   ytdlpPath = path.join(__dirname, '..', 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp.exe');
 }
-const youtubedl = youtubedlPkg.create(ytdlpPath);
+
+import { spawn } from 'child_process';
+const youtubedl = function(url: string, flags: any = {}) {
+  return new Promise((resolve, reject) => {
+    const args: string[] = [];
+    for (const [key, value] of Object.entries(flags)) {
+      if (value === false) continue;
+      const param = '--' + key.replace(/[A-Z]/g, m => '-' + m.toLowerCase());
+      if (value === true) args.push(param);
+      else args.push(param, String(value));
+    }
+    args.push(url);
+    
+    const proc = spawn(ytdlpPath, args, { windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d: Buffer) => stdout += d.toString());
+    proc.stderr.on('data', (d: Buffer) => stderr += d.toString());
+    proc.on('close', code => {
+      if (code === 0) {
+        if (flags.dumpJson) {
+          try { resolve(JSON.parse(stdout)); } catch (e) { resolve(stdout); }
+        } else {
+          resolve(stdout);
+        }
+      } else {
+        reject(new Error(stderr || `yt-dlp exited with code ${code}`));
+      }
+    });
+    proc.on('error', reject);
+  });
+};
 
 function getOAuthClient(userId: number) {
   const settings = db.prepare('SELECT youtube_client_id, youtube_client_secret FROM settings WHERE user_id = ?').get(userId) as any;
