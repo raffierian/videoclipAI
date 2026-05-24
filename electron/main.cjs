@@ -19,7 +19,7 @@ function createWindow() {
   const serverPath = path.join(__dirname, '..', 'dist-server', 'server.js')
   const { fork } = require('child_process')
   serverProcess = fork(serverPath, [], {
-    cwd: path.join(__dirname, '..'),
+    cwd: app.isPackaged ? process.resourcesPath : path.join(__dirname, '..'),
     env: {
       ...process.env,
       NODE_ENV: app.isPackaged ? 'production' : 'development'
