@@ -17,8 +17,8 @@ function createWindow() {
   })
 
   const serverPath = path.join(__dirname, '..', 'dist-server', 'server.js')
-  const { fork } = require('child_process')
-  serverProcess = fork(serverPath, [], {
+  const { utilityProcess } = require('electron')
+  serverProcess = utilityProcess.fork(serverPath, [], {
     cwd: app.isPackaged ? process.resourcesPath : path.join(__dirname, '..'),
     env: {
       ...process.env,
@@ -36,6 +36,15 @@ function createWindow() {
 
   serverProcess.stderr.on('data', (data) => {
     console.error(`[Server Error] ${data}`)
+    if (app.isPackaged) {
+      dialog.showErrorBox('Backend Server Error', data.toString())
+    }
+  })
+
+  serverProcess.on('exit', (code, signal) => {
+    if (app.isPackaged && code !== 0) {
+      dialog.showErrorBox('Backend Crash', `Server exited with code ${code} and signal ${signal}`)
+    }
   })
 
   setTimeout(() => {
