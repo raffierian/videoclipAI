@@ -16,7 +16,9 @@ import { register, login, authMiddleware } from "./lib/auth";
 
 dotenv.config();
 
-const __dirname = path.resolve();
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function getOAuthClient(userId: number) {
   const settings = db.prepare('SELECT youtube_client_id, youtube_client_secret FROM settings WHERE user_id = ?').get(userId) as any;
@@ -130,7 +132,7 @@ import { spawn } from 'child_process';
 
 const venvPy = (() => {
   const isPackaged = __dirname.includes('app.asar');
-  const appRoot = isPackaged ? path.join(__dirname, '..', '..') : path.join(__dirname);
+  const appRoot = isPackaged ? path.join(__dirname, '..', '..') : path.join(__dirname, '..');
   const p = path.join(appRoot, '.venv', 'Scripts', 'python.exe');
   return fs.existsSync(p) ? p : 'python';
 })();
@@ -140,7 +142,7 @@ function spawnPython(args: string[], timeoutMs = 120000): Promise<string | null>
     const isPackaged = __dirname.includes('app.asar');
     const scriptsBase = isPackaged 
       ? path.join(__dirname, '..', '..', 'app.asar.unpacked', 'scripts')
-      : path.join(__dirname, 'scripts');
+      : path.join(__dirname, '..', 'scripts');
     const scriptPath = path.join(scriptsBase, args[0]);
     if (!fs.existsSync(scriptPath)) { console.error('Script not found:', scriptPath); resolve(null); return; }
     let stdout = '';
