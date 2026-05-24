@@ -36,9 +36,6 @@ function createWindow() {
 
   serverProcess.stderr.on('data', (data) => {
     console.error(`[Server Error] ${data}`)
-    if (app.isPackaged) {
-      dialog.showErrorBox('Backend Server Error', data.toString())
-    }
   })
 
   serverProcess.on('exit', (code, signal) => {
