@@ -84,18 +84,27 @@ function getOAuthClient(userId: number) {
 // Helper for history
 function saveToHistory(userId: number, entry: any) {
   try {
+    const id = Date.now().toString() + Math.random().toString(36).substring(7);
     const stmt = db.prepare('INSERT INTO history (id, user_id, type, title, url, status, details) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    
+    const details = { ...(entry.details || {}) };
+    if (entry.videoId) details.videoId = entry.videoId;
+    if (entry.sourceVideo) details.sourceVideo = entry.sourceVideo;
+    if (entry.error) details.error = entry.error;
+
     stmt.run(
-      Date.now().toString() + Math.random().toString(36).substring(7),
+      id,
       userId,
       entry.type,
       entry.title || null,
       entry.url || null,
       entry.status || 'success',
-      JSON.stringify(entry.details || {})
+      JSON.stringify(details)
     );
+    return id;
   } catch (e) {
     console.error("Failed to save to history:", e);
+    return null;
   }
 }
 
@@ -708,6 +717,92 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     return videoId;
   }
 
+  // === UPLOAD A SINGLE CLIP TO FACEBOOK PAGE ===
+  async function uploadClipToFacebook(
+    sourceUrl: string,
+    clip: { title: string; hook: string; description: string; tags: string[]; startTimeSeconds: number; endTimeSeconds: number },
+    userId: number,
+    fbSettings: { fb_page_access_token: string; fb_page_id: string }
+  ) {
+    const startSec = clip.startTimeSeconds;
+    const endSec = clip.endTimeSeconds;
+    const startIso = new Date(startSec * 1000).toISOString().substring(11, 19);
+    const endIso = new Date(endSec * 1000).toISOString().substring(11, 19);
+    const sectionStr = `*${startIso}-${endIso}`;
+
+    // 1. Download clip segment
+    const tempSegPath = path.join(os.tmpdir(), `autopilot_fb_seg_${Date.now()}.mp4`);
+    await youtubedl(sourceUrl, {
+      format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+      downloadSections: sectionStr,
+      forceKeyframesAtCuts: true,
+      output: tempSegPath,
+      noWarnings: true,
+      noCheckCertificates: true,
+      extractorArgs: 'youtube:player_client=android',
+      ffmpegLocation: resolvedFfmpegPath,
+    } as any);
+
+    // 2. Re-encode portrait (9:16) with face tracking (no subtitles for auto-pilot as requested before)
+    const tempOutPath = path.join(os.tmpdir(), `autopilot_fb_out_${Date.now()}.mp4`);
+    const faceTimeline = await runFaceTimeline(tempSegPath);
+    const cropFilter = faceTimeline
+      ? `sendcmd=f='${faceTimeline.cmdsPath.replace(/\\/g, '/').replace(':', '\\:')}',crop=${faceTimeline.crop_w}:${faceTimeline.crop_h}`
+      : 'crop=ih*9/16:ih';
+
+    const filters: string[] = [cropFilter];
+
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(tempSegPath)
+        .videoFilters(filters)
+        .outputOptions([
+          '-c:v libx264',
+          '-crf 18',
+          '-preset medium',
+          '-profile:v high',
+          '-level 4.2',
+          '-pix_fmt yuv420p',
+          '-movflags +faststart',
+          '-c:a aac',
+          '-b:a 256k',
+          '-ar 48000'
+        ])
+        .save(tempOutPath)
+        .on('end', () => {
+          resolve();
+        })
+        .on('error', reject);
+    });
+
+    if (fs.existsSync(tempSegPath)) fs.unlinkSync(tempSegPath);
+    if (faceTimeline && fs.existsSync(faceTimeline.cmdsPath)) fs.unlinkSync(faceTimeline.cmdsPath);
+
+    // 3. Upload to Facebook Page via native FormData
+    const formData = new FormData();
+    const fileBlob = new Blob([fs.readFileSync(tempOutPath)]);
+    formData.append('source', fileBlob, 'video.mp4');
+    formData.append('title', clip.title);
+    formData.append('description', `${clip.description}\n\n${clip.hook}\n\n#shorts #viralclipai`);
+    formData.append('access_token', fbSettings.fb_page_access_token);
+
+    const fbResponse = await fetch(`https://graph.facebook.com/v19.0/${fbSettings.fb_page_id}/videos`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!fbResponse.ok) {
+      const fbErr = await fbResponse.json();
+      if (fs.existsSync(tempOutPath)) fs.unlinkSync(tempOutPath);
+      throw new Error(fbErr.error?.message || "Gagal mengunggah ke Facebook");
+    }
+
+    const fbResult = await fbResponse.json();
+    const videoId = fbResult.id;
+
+    if (fs.existsSync(tempOutPath)) fs.unlinkSync(tempOutPath);
+    return videoId;
+  }
+
   const runWatcher = async () => {
     if (watcherStatus.isChecking) return;
     watcherStatus.isChecking = true;
@@ -778,7 +873,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
               const sourceUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
               // Don't mark as processed yet — only mark AFTER successful upload
-              saveToHistory(user.id, { type: 'auto_process', title: videoTitle, url: sourceUrl, status: 'processing' });
+              const parentHistoryId = saveToHistory(user.id, { type: 'auto_process', title: videoTitle, url: sourceUrl, status: 'processing' });
 
               try {
                 // 1. Get transcript
@@ -810,6 +905,9 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
                 if (!transcript) {
                   addWatcherLog(`No transcript for ${videoTitle}, skipping.`);
+                  if (parentHistoryId) {
+                    db.prepare("UPDATE history SET status = 'error', details = ? WHERE id = ?").run(JSON.stringify({ error: "No transcript available" }), parentHistoryId);
+                  }
                   continue;
                 }
 
@@ -818,31 +916,64 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                 const clips = await analyzeClipsServer(sourceUrl, videoTitle, transcript, 2, user.id);
                 if (!clips || clips.length === 0) {
                   addWatcherLog(`No clips generated for ${videoTitle}.`);
+                  if (parentHistoryId) {
+                    db.prepare("UPDATE history SET status = 'error', details = ? WHERE id = ?").run(JSON.stringify({ error: "No clips generated by AI" }), parentHistoryId);
+                  }
                   continue;
                 }
 
+                // Get Facebook settings for auto-posting if configured
+                const fbSettings = db.prepare('SELECT fb_page_access_token, fb_page_id FROM settings WHERE user_id = ?').get(user.id) as any;
+                const hasFb = fbSettings && fbSettings.fb_page_access_token && fbSettings.fb_page_id;
+
                 // 3. Upload each clip
                 for (const clip of clips) {
-                  addWatcherLog(`Uploading clip: ${clip.title}`);
+                  addWatcherLog(`Uploading clip to YouTube: ${clip.title}`);
                   try {
                     const uploadedId = await uploadClipToYoutube(youtube, sourceUrl, clip, user.id);
                     saveToHistory(user.id, {
                       type: 'auto_process', title: clip.title,
                       url: `https://youtube.com/shorts/${uploadedId}`,
-                      details: { videoId: uploadedId, sourceVideo: videoTitle },
+                      details: { videoId: uploadedId, sourceVideo: videoTitle, platform: 'youtube' },
                       status: 'success'
                     });
                     addWatcherLog(`✅ Uploaded Shorts: https://youtube.com/shorts/${uploadedId}`);
                   } catch (clipErr: any) {
-                    addWatcherLog(`❌ Failed clip "${clip.title}": ${clipErr.message}`);
-                    saveToHistory(user.id, { type: 'auto_process', title: clip.title, url: sourceUrl, status: 'error' });
+                    addWatcherLog(`❌ Failed clip YouTube "${clip.title}": ${clipErr.message}`);
+                    saveToHistory(user.id, { type: 'auto_process', title: clip.title, url: sourceUrl, status: 'error', error: clipErr.message });
+                  }
+
+                  if (hasFb) {
+                    addWatcherLog(`Uploading clip to Facebook: ${clip.title}`);
+                    try {
+                      const fbUploadedId = await uploadClipToFacebook(sourceUrl, clip, user.id, fbSettings);
+                      saveToHistory(user.id, {
+                        type: 'auto_process_facebook', title: clip.title,
+                        url: `https://facebook.com/${fbUploadedId}`,
+                        details: { videoId: fbUploadedId, sourceVideo: videoTitle, platform: 'facebook' },
+                        status: 'success'
+                      });
+                      addWatcherLog(`✅ Uploaded Facebook: https://facebook.com/${fbUploadedId}`);
+                    } catch (fbErr: any) {
+                      addWatcherLog(`❌ Failed clip FB "${clip.title}": ${fbErr.message}`);
+                      saveToHistory(user.id, { type: 'auto_process_facebook', title: clip.title, url: sourceUrl, status: 'error', error: fbErr.message });
+                    }
                   }
                 }
+                
+                // Update parent video status to success!
+                if (parentHistoryId) {
+                  db.prepare("UPDATE history SET status = 'success' WHERE id = ?").run(parentHistoryId);
+                }
+
                 // Mark video as processed ONLY after all clips attempted successfully
                 db.prepare('INSERT OR IGNORE INTO processed_videos (user_id, video_id) VALUES (?, ?)').run(user.id, videoId);
                 addWatcherLog(`✅ Finished processing: ${videoTitle}`);
               } catch (videoErr: any) {
                 addWatcherLog(`❌ Error processing ${videoTitle}: ${videoErr.message} — will retry next run`);
+                if (parentHistoryId) {
+                  db.prepare("UPDATE history SET status = 'error', details = ? WHERE id = ?").run(JSON.stringify({ error: videoErr.message }), parentHistoryId);
+                }
               }
             }
           } catch (chanErr: any) {
@@ -1222,6 +1353,129 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  app.post("/api/upload/facebook", authMiddleware, express.json(), async (req: any, res) => {
+    try {
+      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode } = req.body;
+
+      const settings = db.prepare('SELECT fb_page_access_token, fb_page_id FROM settings WHERE user_id = ?').get(req.user.id) as any;
+      if (!settings || !settings.fb_page_access_token || !settings.fb_page_id) {
+        return res.status(400).json({ error: "Facebook Page Access Token atau Page ID belum diatur di Pengaturan." });
+      }
+
+      const startSec = parseFloat(start as string);
+      const endSec = parseFloat(end as string);
+      const startIso = new Date(startSec * 1000).toISOString().substring(11, 19);
+      const endIso = new Date(endSec * 1000).toISOString().substring(11, 19);
+      const sectionStr = `*${startIso}-${endIso}`;
+
+      const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
+      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
+      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+
+      await youtubedl(url as string, {
+        format: ytdlFormat,
+        downloadSections: sectionStr,
+        forceKeyframesAtCuts: true,
+        output: tempVideoPath,
+        noWarnings: true,
+        noCheckCertificates: true,
+        extractorArgs: 'youtube:player_client=android',
+        ffmpegLocation: resolvedFfmpegPath
+      } as any);
+
+      const tempPath = path.join(os.tmpdir(), `temp_upload_fb_${Date.now()}.mp4`);
+
+      const capStyle2 = (captionStyle === 'tiktok') ? 'tiktok' : 'normal';
+      const subInfo2 = (useSubtitles === 'true' || useSubtitles === true) ? await prepareSubtitles(info, startSec, capStyle2) : null;
+
+      let faceTimeline2: { cmdsPath: string; crop_w: number; crop_h: number } | null = null;
+      if (format === 'portrait' && videoMode === 'reframe') {
+        faceTimeline2 = await runFaceTimeline(tempVideoPath);
+      }
+
+      let job2 = ffmpeg(tempVideoPath).format("mp4").outputOptions([
+        "-c:v libx264",
+        "-crf 18",
+        "-preset medium",
+        "-profile:v high",
+        "-level 4.2",
+        "-pix_fmt yuv420p",
+        "-c:a aac",
+        "-b:a 256k",
+        "-ar 48000",
+        "-movflags frag_keyframe+empty_moov+faststart"
+      ]);
+
+      if (format === 'portrait') {
+        if (videoMode === 'split') {
+          let complex = `[0:v]split[top][bottom];[top]crop=iw/2:ih:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[t];[bottom]crop=iw/2:ih:iw/2:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[b];[t][b]vstack=inputs=2[vid]`;
+          if (subInfo2) {
+            complex += `;[vid]subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'[vfinal]`;
+            job2 = job2.complexFilter(complex, 'vfinal');
+          } else {
+            job2 = job2.complexFilter(complex, 'vid');
+          }
+        } else {
+          const filters2: string[] = [];
+          if (videoMode === 'reframe' && faceTimeline2) {
+            const cmdsEsc2 = faceTimeline2.cmdsPath.replace(/\\/g, '/').replace(':', '\\:');
+            filters2.push(`sendcmd=f='${cmdsEsc2}',crop=${faceTimeline2.crop_w}:${faceTimeline2.crop_h}`);
+          } else {
+            filters2.push('crop=ih*9/16:ih');
+          }
+          if (subInfo2) filters2.push(`subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'`);
+          job2 = job2.videoFilters(filters2);
+        }
+      } else {
+        if (subInfo2) job2 = job2.videoFilters([`subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'`]);
+      }
+
+      job2.save(tempPath).on('end', async () => {
+        if (subInfo2 && fs.existsSync(subInfo2.rawPath)) fs.unlinkSync(subInfo2.rawPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (faceTimeline2 && fs.existsSync(faceTimeline2.cmdsPath)) fs.unlinkSync(faceTimeline2.cmdsPath);
+
+        try {
+          const formData = new FormData();
+          const fileBlob = new Blob([fs.readFileSync(tempPath)]);
+          formData.append('source', fileBlob, 'video.mp4');
+          formData.append('title', title);
+          formData.append('description', `${description}\n\n#shorts #viralclipai`);
+          formData.append('access_token', settings.fb_page_access_token);
+
+          const fbResponse = await fetch(`https://graph.facebook.com/v19.0/${settings.fb_page_id}/videos`, {
+            method: 'POST',
+            body: formData
+          });
+
+          if (!fbResponse.ok) {
+            const fbErr = await fbResponse.json();
+            throw new Error(fbErr.error?.message || "Gagal mengunggah ke Facebook");
+          }
+
+          const fbResult = await fbResponse.json();
+          const videoId = fbResult.id;
+
+          fs.unlinkSync(tempPath);
+          saveToHistory(req.user.id, { type: 'upload_facebook', title, url, videoId, status: 'success' });
+          res.json({ success: true, videoId });
+        } catch (uploadErr: any) {
+          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+          saveToHistory(req.user.id, { type: 'upload_facebook', title, url, status: 'error', error: uploadErr.message });
+          res.status(500).json({ error: uploadErr.message });
+        }
+      }).on('error', (err: any) => {
+        if (subInfo2 && fs.existsSync(subInfo2.rawPath)) fs.unlinkSync(subInfo2.rawPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (faceTimeline2 && fs.existsSync(faceTimeline2.cmdsPath)) fs.unlinkSync(faceTimeline2.cmdsPath);
+
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        res.status(500).json({ error: err.message });
+      });
+
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
 
 
   // === ENDPOINT: License System ===
@@ -1310,7 +1564,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
   // === ENDPOINT: Settings (API Keys) ===
   app.get("/api/settings", authMiddleware, (req: any, res) => {
     try {
-      const settings = db.prepare('SELECT gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret FROM settings WHERE user_id = ?').get(req.user.id) || {};
+      const settings = db.prepare('SELECT gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id FROM settings WHERE user_id = ?').get(req.user.id) || {};
       res.json(settings);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1319,17 +1573,19 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/settings", authMiddleware, express.json(), (req: any, res) => {
     try {
-      const { gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret } = req.body;
+      const { gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id } = req.body;
       db.prepare(`
-        INSERT INTO settings (user_id, gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO settings (user_id, gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
         gemini_key = excluded.gemini_key,
         openai_key = excluded.openai_key,
         groq_key = excluded.groq_key,
         youtube_client_id = excluded.youtube_client_id,
-        youtube_client_secret = excluded.youtube_client_secret
-      `).run(req.user.id, gemini_key || '', openai_key || '', groq_key || '', youtube_client_id || '', youtube_client_secret || '');
+        youtube_client_secret = excluded.youtube_client_secret,
+        fb_page_access_token = excluded.fb_page_access_token,
+        fb_page_id = excluded.fb_page_id
+      `).run(req.user.id, gemini_key || '', openai_key || '', groq_key || '', youtube_client_id || '', youtube_client_secret || '', fb_page_access_token || '', fb_page_id || '');
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

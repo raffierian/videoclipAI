@@ -13,6 +13,7 @@ import {
   AlertCircle,
   ExternalLink,
   Youtube,
+  Facebook,
   Menu,
   X,
   Smartphone,
@@ -703,16 +704,19 @@ export default function App() {
                       <td className="px-3 md:px-6 py-4 md:py-5">
 
                         <div className="flex items-center gap-3">
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${item.type === 'upload' ? 'bg-red-500/10 text-red-500' :
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                            item.type === 'upload' ? 'bg-red-500/10 text-red-500' :
+                            item.type === 'upload_facebook' || item.type === 'auto_process_facebook' ? 'bg-blue-500/10 text-blue-400' :
                             item.type === 'auto_process' ? 'bg-orange-500/10 text-orange-500' :
-                              'bg-blue-500/10 text-blue-500'
-                            }`}>
+                            'bg-blue-500/10 text-blue-500'
+                          }`}>
                             {item.type === 'upload' ? <Youtube size={18} /> :
-                              item.type === 'auto_process' ? <Zap size={18} /> :
-                                <Download size={18} />}
+                             item.type === 'upload_facebook' || item.type === 'auto_process_facebook' ? <Facebook size={18} /> :
+                             item.type === 'auto_process' ? <Zap size={18} /> :
+                             <Download size={18} />}
                           </div>
                           <div>
-                            <p className="text-sm font-bold text-white capitalize">{item.type.replace('_', ' ')}</p>
+                            <p className="text-sm font-bold text-white capitalize">{item.type.replace(/_/g, ' ')}</p>
                             <p className="text-[10px] text-slate-500 uppercase tracking-widest">{item.format || 'original'}</p>
                           </div>
                         </div>
@@ -732,29 +736,41 @@ export default function App() {
                         <p className="text-xs text-slate-500">{new Date(item.timestamp).toLocaleDateString()}</p>
                       </td>
                       <td className="px-6 py-5">
-                        <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold ${item.status === 'success' || item.status === 'detected' ? 'bg-green-500/10 text-green-400' :
-                          item.status === 'pending' ? 'bg-orange-500/10 text-orange-400' :
-                            'bg-red-500/10 text-red-400'
-                          }`}>
-                          <div className={`w-1.5 h-1.5 rounded-full ${item.status === 'success' || item.status === 'detected' ? 'bg-green-400' :
-                            item.status === 'pending' ? 'bg-orange-400' :
-                              'bg-red-400'
-                            }`} />
+                        <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold ${
+                          item.status === 'success' || item.status === 'detected' ? 'bg-green-500/10 text-green-400' :
+                          item.status === 'pending' || item.status === 'processing' ? 'bg-orange-500/10 text-orange-400' :
+                          'bg-red-500/10 text-red-400'
+                        }`}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${
+                            item.status === 'success' || item.status === 'detected' ? 'bg-green-400' :
+                            item.status === 'pending' || item.status === 'processing' ? 'bg-orange-400 animate-pulse' :
+                            'bg-red-400'
+                          }`} />
                           {item.status.toUpperCase()}
                         </div>
                       </td>
                       <td className="px-6 py-5 text-right">
-                        {item.videoId ? (
+                        {item.details?.videoId ? (
                           <a
-                            href={`https://youtube.com/shorts/${item.videoId}`}
+                            href={
+                              item.type === 'upload_facebook' || item.type === 'auto_process_facebook' || item.details?.platform === 'facebook'
+                                ? `https://facebook.com/${item.details.videoId}`
+                                : `https://youtube.com/shorts/${item.details.videoId}`
+                            }
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white p-2 rounded-lg transition-all inline-flex items-center gap-2 text-xs font-bold"
+                            className={`p-2 rounded-lg transition-all inline-flex items-center gap-2 text-xs font-bold ${
+                              item.type === 'upload_facebook' || item.type === 'auto_process_facebook' || item.details?.platform === 'facebook'
+                                ? 'bg-blue-600/10 hover:bg-blue-600 text-blue-400 hover:text-white'
+                                : 'bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white'
+                            }`}
                           >
                             <ExternalLink size={14} />
-                            View on YT
+                            {item.type === 'upload_facebook' || item.type === 'auto_process_facebook' || item.details?.platform === 'facebook'
+                              ? 'View on FB'
+                              : 'View on YT'}
                           </a>
-                        ) : item.type === 'auto_process' ? (
+                        ) : item.status === 'processing' ? (
                           <Zap size={16} className="text-orange-500 inline mr-2 animate-pulse" />
                         ) : (
                           <span className="text-slate-600 italic text-xs">No link available</span>
@@ -948,6 +964,42 @@ function ClipCard({ clip, index, originalUrl, quality, useSubtitles, captionStyl
     }
   };
 
+  const handleFacebookUpload = async () => {
+    setIsUploading(true);
+    try {
+      const response = await authedFetch('/api/upload/facebook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: originalUrl,
+          start: clip.startTimeSeconds,
+          end: clip.endTimeSeconds,
+          title: clip.title,
+          description: clip.description,
+          tags: clip.tags,
+          format: clip.aspectRatio,
+          useSubtitles,
+          captionStyle,
+          videoMode
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Gagal mengunggah");
+      }
+
+      const result = await response.json();
+      showToast(`Berhasil! Video diunggah ke Facebook Page. (ID: ${result.videoId})`, "success");
+      onActionSuccess();
+    } catch (e: any) {
+      console.error("Facebook upload error:", e);
+      showToast(`Gagal upload ke Facebook: ${e.message}`, "error");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const handlePost = (platform: string) => {
     showToast(`Mengarahkan ke OAuth untuk ${platform}...`, "info");
   };
@@ -1054,6 +1106,18 @@ function ClipCard({ clip, index, originalUrl, quality, useSubtitles, captionStyl
               title="Upload ke YouTube Shorts"
             >
               <Youtube className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.preventDefault();
+                await handleFacebookUpload();
+              }}
+              disabled={isUploading}
+              className="w-11 h-full min-h-[44px] bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white rounded-xl flex items-center justify-center transition-colors shadow-lg shadow-blue-600/20"
+              title="Upload ke Facebook Page"
+            >
+              <Facebook className="w-5 h-5" />
             </button>
           </div>
         </div>

@@ -15,6 +15,8 @@ export function SettingsModal({ isOpen, onClose, authedFetch, showToast }: Setti
   const [groqKey, setGroqKey] = useState('');
   const [youtubeClientId, setYoutubeClientId] = useState('');
   const [youtubeClientSecret, setYoutubeClientSecret] = useState('');
+  const [fbPageAccessToken, setFbPageAccessToken] = useState('');
+  const [fbPageId, setFbPageId] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
@@ -33,6 +35,8 @@ export function SettingsModal({ isOpen, onClose, authedFetch, showToast }: Setti
         setGroqKey(data.groq_key || '');
         setYoutubeClientId(data.youtube_client_id || '');
         setYoutubeClientSecret(data.youtube_client_secret || '');
+        setFbPageAccessToken(data.fb_page_access_token || '');
+        setFbPageId(data.fb_page_id || '');
       }
     } catch (e) {
       console.error("Failed to load settings:", e);
@@ -51,7 +55,9 @@ export function SettingsModal({ isOpen, onClose, authedFetch, showToast }: Setti
           openai_key: openaiKey,
           groq_key: groqKey,
           youtube_client_id: youtubeClientId,
-          youtube_client_secret: youtubeClientSecret
+          youtube_client_secret: youtubeClientSecret,
+          fb_page_access_token: fbPageAccessToken,
+          fb_page_id: fbPageId
         })
       });
       if (res && res.ok) {
@@ -148,6 +154,32 @@ export function SettingsModal({ isOpen, onClose, authedFetch, showToast }: Setti
                     onChange={(e) => setYoutubeClientSecret(e.target.value)}
                     placeholder="GOCSPX-..."
                     className="w-full bg-slate-950 border border-slate-800 text-white px-4 py-3 rounded-xl outline-none focus:border-red-500 transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="pb-2">
+              <h3 className="text-blue-500 font-bold mb-3 uppercase tracking-wider text-xs">Facebook Page Video API</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">Page Access Token</label>
+                  <input
+                    type="password"
+                    value={fbPageAccessToken}
+                    onChange={(e) => setFbPageAccessToken(e.target.value)}
+                    placeholder="EAAG..."
+                    className="w-full bg-slate-950 border border-slate-800 text-white px-4 py-3 rounded-xl outline-none focus:border-blue-500 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">Page ID</label>
+                  <input
+                    type="text"
+                    value={fbPageId}
+                    onChange={(e) => setFbPageId(e.target.value)}
+                    placeholder="1000..."
+                    className="w-full bg-slate-950 border border-slate-800 text-white px-4 py-3 rounded-xl outline-none focus:border-blue-500 transition-colors"
                   />
                 </div>
               </div>
