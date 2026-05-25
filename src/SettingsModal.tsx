@@ -17,6 +17,9 @@ export function SettingsModal({ isOpen, onClose, authedFetch, showToast }: Setti
   const [youtubeClientSecret, setYoutubeClientSecret] = useState('');
   const [fbPageAccessToken, setFbPageAccessToken] = useState('');
   const [fbPageId, setFbPageId] = useState('');
+  const [igBusinessAccountId, setIgBusinessAccountId] = useState('');
+  const [tiktokAccessToken, setTiktokAccessToken] = useState('');
+  const [satisfyingVideoPath, setSatisfyingVideoPath] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
@@ -37,6 +40,9 @@ export function SettingsModal({ isOpen, onClose, authedFetch, showToast }: Setti
         setYoutubeClientSecret(data.youtube_client_secret || '');
         setFbPageAccessToken(data.fb_page_access_token || '');
         setFbPageId(data.fb_page_id || '');
+        setIgBusinessAccountId(data.ig_business_account_id || '');
+        setTiktokAccessToken(data.tiktok_access_token || '');
+        setSatisfyingVideoPath(data.satisfying_video_path || '');
       }
     } catch (e) {
       console.error("Failed to load settings:", e);
@@ -57,7 +63,10 @@ export function SettingsModal({ isOpen, onClose, authedFetch, showToast }: Setti
           youtube_client_id: youtubeClientId,
           youtube_client_secret: youtubeClientSecret,
           fb_page_access_token: fbPageAccessToken,
-          fb_page_id: fbPageId
+          fb_page_id: fbPageId,
+          ig_business_account_id: igBusinessAccountId,
+          tiktok_access_token: tiktokAccessToken,
+          satisfying_video_path: satisfyingVideoPath
         })
       });
       if (res && res.ok) {
@@ -180,6 +189,54 @@ export function SettingsModal({ isOpen, onClose, authedFetch, showToast }: Setti
                     onChange={(e) => setFbPageId(e.target.value)}
                     placeholder="1000..."
                     className="w-full bg-slate-950 border border-slate-800 text-white px-4 py-3 rounded-xl outline-none focus:border-blue-500 transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="pb-2">
+              <h3 className="text-pink-500 font-bold mb-3 uppercase tracking-wider text-xs">Instagram Reels API</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">Instagram Business Account ID</label>
+                  <input
+                    type="text"
+                    value={igBusinessAccountId}
+                    onChange={(e) => setIgBusinessAccountId(e.target.value)}
+                    placeholder="1784..."
+                    className="w-full bg-slate-950 border border-slate-800 text-white px-4 py-3 rounded-xl outline-none focus:border-pink-500 transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="pb-2">
+              <h3 className="text-teal-400 font-bold mb-3 uppercase tracking-wider text-xs">TikTok Direct Post API</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">TikTok Access Token</label>
+                  <input
+                    type="password"
+                    value={tiktokAccessToken}
+                    onChange={(e) => setTiktokAccessToken(e.target.value)}
+                    placeholder="act.tcs..."
+                    className="w-full bg-slate-950 border border-slate-800 text-white px-4 py-3 rounded-xl outline-none focus:border-teal-500 transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="pb-2">
+              <h3 className="text-purple-400 font-bold mb-3 uppercase tracking-wider text-xs">Split-Screen Settings</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">Jalur Video Game/Satisfying (MP4 Lokal)</label>
+                  <input
+                    type="text"
+                    value={satisfyingVideoPath}
+                    onChange={(e) => setSatisfyingVideoPath(e.target.value)}
+                    placeholder="C:\videos\gameplay.mp4"
+                    className="w-full bg-slate-950 border border-slate-800 text-white px-4 py-3 rounded-xl outline-none focus:border-purple-500 transition-colors"
                   />
                 </div>
               </div>

@@ -55,19 +55,69 @@ function createWindow() {
   })
 }
 
+// Logger Helper for Auto-Updater
+const fs = require('fs');
+const logDir = path.join(app.getPath('userData'), 'logs');
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true });
+}
+const logFilePath = path.join(logDir, 'updater.log');
+
+function logUpdater(message) {
+  const time = new Date().toISOString();
+  const entry = `[${time}] ${message}\n`;
+  try {
+    fs.appendFileSync(logFilePath, entry);
+  } catch (e) {
+    console.error('Failed to write to updater log file:', e);
+  }
+  console.log(`[Updater] ${message}`);
+}
+
 // Auto-Updater Events
-autoUpdater.on('update-downloaded', (info) => {
+autoUpdater.on('checking-for-update', () => {
+  logUpdater('Mengecek pembaruan...');
+});
+
+autoUpdater.on('update-available', (info) => {
+  logUpdater(`Pembaruan tersedia: Versi ${info.version}`);
   dialog.showMessageBox({
     type: 'info',
-    title: 'Update Tersedia',
+    title: 'Pembaruan Tersedia',
+    message: `Versi baru (${info.version}) telah tersedia. Sedang mengunduh pembaruan di latar belakang...`,
+    buttons: ['OK']
+  });
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  logUpdater('Aplikasi sudah menggunakan versi terbaru.');
+});
+
+autoUpdater.on('error', (err) => {
+  logUpdater(`Error saat mengecek pembaruan: ${err.stack || err.message}`);
+});
+
+autoUpdater.on('download-progress', (progressObj) => {
+  const speed = (progressObj.bytesPerSecond / 1024 / 1024).toFixed(2); // MB/s
+  const percent = progressObj.percent.toFixed(2);
+  logUpdater(`Progress unduhan: ${percent}% (${speed} MB/s)`);
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+  logUpdater('Pembaruan selesai diunduh.');
+  dialog.showMessageBox({
+    type: 'info',
+    title: 'Update Siap Dipasang',
     message: 'Versi baru telah diunduh. Aplikasi akan ditutup dan diperbarui.',
     buttons: ['Restart Sekarang', 'Nanti']
   }).then((result) => {
     if (result.response === 0) {
+      logUpdater('Memulai proses instalasi pembaruan...');
       autoUpdater.quitAndInstall();
     }
   });
 });
+
 
 app.on('ready', () => {
   createWindow();

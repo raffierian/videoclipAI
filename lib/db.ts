@@ -60,10 +60,25 @@ const initDb = () => {
       groq_key TEXT,
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
+
     CREATE TABLE IF NOT EXISTS app_license (
       id INTEGER PRIMARY KEY,
       license_key TEXT,
       activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS scheduler_queue (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      video_path TEXT NOT NULL,
+      title TEXT,
+      description TEXT,
+      tags TEXT,
+      scheduled_time TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      error_message TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id)
     );
   `);
   
@@ -72,6 +87,9 @@ const initDb = () => {
   try { db.exec("ALTER TABLE settings ADD COLUMN youtube_client_secret TEXT;"); } catch (e) { }
   try { db.exec("ALTER TABLE settings ADD COLUMN fb_page_access_token TEXT;"); } catch (e) { }
   try { db.exec("ALTER TABLE settings ADD COLUMN fb_page_id TEXT;"); } catch (e) { }
+  try { db.exec("ALTER TABLE settings ADD COLUMN ig_business_account_id TEXT;"); } catch (e) { }
+  try { db.exec("ALTER TABLE settings ADD COLUMN tiktok_access_token TEXT;"); } catch (e) { }
+  try { db.exec("ALTER TABLE settings ADD COLUMN satisfying_video_path TEXT;"); } catch (e) { }
 };
 
 initDb();

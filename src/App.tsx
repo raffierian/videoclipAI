@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Youtube,
   Facebook,
+  Instagram,
   Menu,
   X,
   Smartphone,
@@ -65,10 +66,42 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isYoutubeConnected, setIsYoutubeConnected] = useState(false);
   const [historyData, setHistoryData] = useState<any[]>([]);
+  const [scheduledJobs, setScheduledJobs] = useState<any[]>([]);
   const [watchedChannels, setWatchedChannels] = useState<string[]>([]);
   const [newChannelId, setNewChannelId] = useState('');
   const [watcherStatus, setWatcherStatus] = useState<any>({ isChecking: false, logs: [], lastAction: 'Idle' });
   const [toasts, setToasts] = useState<{ id: number; message: string; type: 'success' | 'error' | 'info' }[]>([]);
+
+  const fetchScheduledJobs = async () => {
+    try {
+      const res = await authedFetch('/api/scheduler/list');
+      if (res && res.ok) {
+        const data = await res.json();
+        setScheduledJobs(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch scheduled jobs:", e);
+    }
+  };
+
+  const handleCancelSchedule = async (id: string) => {
+    if (!window.confirm("Apakah Anda yakin ingin membatalkan jadwal postingan ini?")) return;
+    try {
+      const res = await authedFetch('/api/scheduler/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+      if (res && res.ok) {
+        showToast("Jadwal postingan berhasil dibatalkan!", "success");
+        fetchScheduledJobs();
+      } else {
+        showToast("Gagal membatalkan jadwal", "error");
+      }
+    } catch (e) {
+      console.error("Cancel schedule failed:", e);
+    }
+  };
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now();
@@ -197,10 +230,12 @@ export default function App() {
     fetchHistory();
     fetchWatchedChannels();
     fetchStatus();
+    fetchScheduledJobs();
 
     const interval = setInterval(() => {
       fetchHistory();
       fetchStatus();
+      fetchScheduledJobs();
     }, 5000);
 
     return () => clearInterval(interval);
@@ -681,6 +716,99 @@ export default function App() {
         <div className="mt-16 md:mt-24">
           <div className="flex items-center gap-3 mb-6 md:mb-8">
             <div className="w-9 h-9 md:w-10 md:h-10 bg-purple-500/20 rounded-xl flex items-center justify-center text-purple-400 shadow-lg shadow-purple-500/10">
+              <Clock size={20} />
+            </div>
+            <h2 className="text-xl md:text-3xl font-black text-white">Scheduler Queue</h2>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-[1.5rem] md:rounded-[2rem] overflow-hidden backdrop-blur-2xl shadow-2xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-white/5 border-b border-white/5">
+                    <th className="px-3 md:px-6 py-4 md:py-5 text-xs font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">Platform</th>
+                    <th className="px-3 md:px-6 py-4 md:py-5 text-xs font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">Video / Klip</th>
+                    <th className="px-3 md:px-6 py-4 md:py-5 text-xs font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">Waktu Upload</th>
+                    <th className="px-3 md:px-6 py-4 md:py-5 text-xs font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">Status</th>
+                    <th className="px-3 md:px-6 py-4 md:py-5 text-xs font-bold text-slate-500 uppercase tracking-wider text-right whitespace-nowrap">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {scheduledJobs.map((item) => (
+                    <tr key={item.id} className="hover:bg-white/[0.02] transition-colors">
+                      <td className="px-3 md:px-6 py-4 md:py-5">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                            item.platform === 'youtube' ? 'bg-red-500/10 text-red-500' :
+                            item.platform === 'facebook' ? 'bg-blue-500/10 text-blue-400' :
+                            item.platform === 'instagram' ? 'bg-gradient-to-tr from-yellow-500/10 via-pink-500/10 to-purple-650/10 text-pink-400' :
+                            'bg-slate-900 border border-slate-700 text-white'
+                          }`}>
+                            {item.platform === 'youtube' ? <Youtube size={18} /> :
+                             item.platform === 'facebook' ? <Facebook size={18} /> :
+                             item.platform === 'instagram' ? <Instagram size={18} /> :
+                             <svg className="w-4.5 h-4.5" fill="currentColor" viewBox="0 0 448 512"><path d="M448,209.91a210.06,210.06,0,0,1-122.77-39.25V349.38A162.55,162.55,0,1,1,185,188.31V278.2a74.62,74.62,0,1,0,38.74,65.8V0h91.56a121.2,121.2,0,0,0,10.66,66.86A123.63,123.63,0,0,0,448,102.73V209.91Z"/></svg>}
+                          </div>
+                          <div>
+                            <p className="text-sm font-bold text-white capitalize">{item.platform}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-5">
+                        <div className="max-w-[250px]">
+                          <p className="text-sm text-white font-medium truncate mb-0.5">{item.title}</p>
+                          <p className="text-xs text-slate-500 truncate">{item.description}</p>
+                        </div>
+                      </td>
+                      <td className="px-6 py-5">
+                        <p className="text-sm text-slate-400">{new Date(Number(item.scheduled_time)).toLocaleTimeString()}</p>
+                        <p className="text-xs text-slate-500">{new Date(Number(item.scheduled_time)).toLocaleDateString()}</p>
+                      </td>
+                      <td className="px-6 py-5">
+                        <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold ${
+                          item.status === 'success' ? 'bg-green-500/10 text-green-400' :
+                          item.status === 'pending' ? 'bg-blue-500/10 text-blue-400' :
+                          item.status === 'processing' ? 'bg-orange-500/10 text-orange-400' :
+                          'bg-red-500/10 text-red-400'
+                        }`}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${
+                            item.status === 'success' ? 'bg-green-400' :
+                            item.status === 'pending' ? 'bg-blue-400' :
+                            item.status === 'processing' ? 'bg-orange-400 animate-pulse' :
+                            'bg-red-400'
+                          }`} />
+                          {item.status.toUpperCase()}
+                        </div>
+                        {item.error_message && (
+                          <p className="text-[10px] text-red-400 mt-1 max-w-[150px] truncate" title={item.error_message}>{item.error_message}</p>
+                        )}
+                      </td>
+                      <td className="px-6 py-5 text-right">
+                        <button
+                          onClick={() => handleCancelSchedule(item.id)}
+                          className="text-xs font-bold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          Batalkan
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {scheduledJobs.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-10 text-center text-slate-500 italic">
+                        Belum ada postingan yang dijadwalkan.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-16 md:mt-24">
+          <div className="flex items-center gap-3 mb-6 md:mb-8">
+            <div className="w-9 h-9 md:w-10 md:h-10 bg-purple-500/20 rounded-xl flex items-center justify-center text-purple-400 shadow-lg shadow-purple-500/10">
               <History size={20} />
             </div>
             <h2 className="text-xl md:text-3xl font-black text-white">Activity History</h2>
@@ -827,6 +955,10 @@ function ClipCard({ clip, index, originalUrl, quality, useSubtitles, captionStyl
   const [isUploading, setIsUploading] = useState(false);
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [isThumbLoading, setIsThumbLoading] = useState(false);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [schedulePlatform, setSchedulePlatform] = useState('youtube');
+  const [scheduleDateTime, setScheduleDateTime] = useState('');
+  const [isScheduling, setIsScheduling] = useState(false);
   const ytId = getYouTubeId(originalUrl);
 
   const handleGenerateThumbnail = async () => {
@@ -1000,6 +1132,127 @@ function ClipCard({ clip, index, originalUrl, quality, useSubtitles, captionStyl
     }
   };
 
+  const handleInstagramUpload = async () => {
+    setIsUploading(true);
+    try {
+      const response = await authedFetch('/api/upload/instagram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: originalUrl,
+          start: clip.startTimeSeconds,
+          end: clip.endTimeSeconds,
+          title: clip.title,
+          description: clip.description,
+          tags: clip.tags,
+          format: clip.aspectRatio,
+          useSubtitles,
+          captionStyle,
+          videoMode
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Gagal mengunggah");
+      }
+
+      const result = await response.json();
+      showToast(`Berhasil! Video diunggah ke Instagram Reels. (ID: ${result.videoId})`, "success");
+      onActionSuccess();
+    } catch (e: any) {
+      console.error("Instagram upload error:", e);
+      showToast(`Gagal upload ke Instagram: ${e.message}`, "error");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleTiktokUpload = async () => {
+    setIsUploading(true);
+    try {
+      const response = await authedFetch('/api/upload/tiktok', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: originalUrl,
+          start: clip.startTimeSeconds,
+          end: clip.endTimeSeconds,
+          title: clip.title,
+          description: clip.description,
+          tags: clip.tags,
+          format: clip.aspectRatio,
+          useSubtitles,
+          captionStyle,
+          videoMode
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Gagal mengunggah");
+      }
+
+      const result = await response.json();
+      showToast(`Berhasil! Video diunggah ke TikTok. (ID: ${result.videoId})`, "success");
+      onActionSuccess();
+    } catch (e: any) {
+      console.error("TikTok upload error:", e);
+      showToast(`Gagal upload ke TikTok: ${e.message}`, "error");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleScheduleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!scheduleDateTime) {
+      showToast("Silakan pilih tanggal dan waktu", "error");
+      return;
+    }
+    const scheduledTimeMs = new Date(scheduleDateTime).getTime();
+    if (scheduledTimeMs <= Date.now()) {
+      showToast("Waktu harus di masa depan", "error");
+      return;
+    }
+
+    setIsScheduling(true);
+    try {
+      const response = await authedFetch('/api/scheduler/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: originalUrl,
+          start: clip.startTimeSeconds,
+          end: clip.endTimeSeconds,
+          title: clip.title,
+          description: clip.description,
+          tags: clip.tags,
+          format: clip.aspectRatio,
+          useSubtitles,
+          captionStyle,
+          videoMode,
+          scheduledTime: scheduledTimeMs,
+          platform: schedulePlatform
+        })
+      });
+
+      if (!response || !response.ok) {
+        const err = await response?.json().catch(() => ({ error: "Render error" }));
+        throw new Error(err?.error || "Gagal menambahkan jadwal");
+      }
+
+      showToast("Berhasil dijadwalkan!", "success");
+      setShowSchedule(false);
+      if (onActionSuccess) onActionSuccess();
+    } catch (e: any) {
+      console.error("Schedule error:", e);
+      showToast(e.message || "Gagal menjadwalkan", "error");
+    } finally {
+      setIsScheduling(false);
+    }
+  };
+
   const handlePost = (platform: string) => {
     showToast(`Mengarahkan ke OAuth untuk ${platform}...`, "info");
   };
@@ -1085,15 +1338,15 @@ function ClipCard({ clip, index, originalUrl, quality, useSubtitles, captionStyl
             {isDownloading ? 'Downloading...' : 'Download'}
           </button>
 
-          <div className="flex gap-2">
+          <div className="flex gap-1.5 flex-wrap justify-end">
             <button
               type="button"
               onClick={handleGenerateThumbnail}
               disabled={isThumbLoading}
-              className="w-11 h-full min-h-[44px] bg-yellow-500 hover:bg-yellow-400 text-slate-900 rounded-xl flex items-center justify-center transition-colors shadow-lg shadow-yellow-500/20"
+              className="w-10 h-10 bg-yellow-500 hover:bg-yellow-400 text-slate-900 rounded-xl flex items-center justify-center transition-colors shadow-lg shadow-yellow-500/20"
               title="Generate Viral Thumbnail"
             >
-              {isThumbLoading ? <div className="w-4 h-4 border-2 border-slate-900/30 border-t-slate-900 rounded-full animate-spin" /> : <Sparkles className="w-5 h-5" />}
+              {isThumbLoading ? <div className="w-4 h-4 border-2 border-slate-900/30 border-t-slate-900 rounded-full animate-spin" /> : <Sparkles className="w-4.5 h-4.5" />}
             </button>
             <button
               type="button"
@@ -1102,10 +1355,10 @@ function ClipCard({ clip, index, originalUrl, quality, useSubtitles, captionStyl
                 await handleYoutubeUpload();
               }}
               disabled={isUploading}
-              className="w-11 h-full min-h-[44px] bg-red-600 hover:bg-red-500 disabled:bg-red-800 text-white rounded-xl flex items-center justify-center transition-colors shadow-lg shadow-red-600/20"
+              className="w-10 h-10 bg-red-600 hover:bg-red-500 disabled:bg-red-800 text-white rounded-xl flex items-center justify-center transition-colors shadow-lg shadow-red-600/20"
               title="Upload ke YouTube Shorts"
             >
-              <Youtube className="w-5 h-5" />
+              <Youtube className="w-4.5 h-4.5" />
             </button>
             <button
               type="button"
@@ -1114,13 +1367,95 @@ function ClipCard({ clip, index, originalUrl, quality, useSubtitles, captionStyl
                 await handleFacebookUpload();
               }}
               disabled={isUploading}
-              className="w-11 h-full min-h-[44px] bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white rounded-xl flex items-center justify-center transition-colors shadow-lg shadow-blue-600/20"
+              className="w-10 h-10 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white rounded-xl flex items-center justify-center transition-colors shadow-lg shadow-blue-600/20"
               title="Upload ke Facebook Page"
             >
-              <Facebook className="w-5 h-5" />
+              <Facebook className="w-4.5 h-4.5" />
+            </button>
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.preventDefault();
+                await handleInstagramUpload();
+              }}
+              disabled={isUploading}
+              className="w-10 h-10 bg-gradient-to-tr from-yellow-500 via-pink-500 to-purple-600 hover:opacity-90 disabled:opacity-50 text-white rounded-xl flex items-center justify-center transition-colors shadow-lg"
+              title="Upload ke Instagram Reels"
+            >
+              <Instagram className="w-4.5 h-4.5" />
+            </button>
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.preventDefault();
+                await handleTiktokUpload();
+              }}
+              disabled={isUploading}
+              className="w-10 h-10 bg-slate-900 border border-slate-700 hover:bg-slate-800 text-white rounded-xl flex items-center justify-center transition-colors"
+              title="Upload ke TikTok"
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 448 512">
+                <path d="M448,209.91a210.06,210.06,0,0,1-122.77-39.25V349.38A162.55,162.55,0,1,1,185,188.31V278.2a74.62,74.62,0,1,0,38.74,65.8V0h91.56a121.2,121.2,0,0,0,10.66,66.86A123.63,123.63,0,0,0,448,102.73V209.91Z"/>
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowSchedule(!showSchedule)}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors shadow-lg ${showSchedule ? 'bg-purple-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-purple-400'}`}
+              title="Jadwalkan Postingan"
+            >
+              <Clock className="w-4.5 h-4.5" />
             </button>
           </div>
         </div>
+
+        {showSchedule && (
+          <motion.form
+            onSubmit={handleScheduleSubmit}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="mt-4 pt-4 border-t border-white/10 space-y-3 bg-slate-950/40 p-3.5 rounded-xl border border-white/5"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Clock size={14} /> Jadwalkan Posting
+              </span>
+              <button type="button" onClick={() => setShowSchedule(false)} className="text-slate-500 hover:text-white">
+                <X size={14} />
+              </button>
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 font-bold uppercase mb-1">Pilih Platform</label>
+              <select
+                value={schedulePlatform}
+                onChange={(e) => setSchedulePlatform(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-850 text-slate-200 px-3 py-2 rounded-lg text-xs outline-none focus:border-purple-500"
+              >
+                <option value="youtube">YouTube Shorts</option>
+                <option value="facebook">Facebook Page</option>
+                <option value="instagram">Instagram Reels</option>
+                <option value="tiktok">TikTok</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 font-bold uppercase mb-1">Waktu Posting</label>
+              <input
+                type="datetime-local"
+                value={scheduleDateTime}
+                onChange={(e) => setScheduleDateTime(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-855 text-white px-3 py-2 rounded-lg text-xs outline-none focus:border-purple-500"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={isScheduling}
+              className="w-full bg-purple-650 hover:bg-purple-600 disabled:opacity-50 text-white text-xs font-bold py-2.5 rounded-lg flex items-center justify-center gap-1.5 transition-colors"
+            >
+              {isScheduling ? <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Clock size={12} />}
+              {isScheduling ? 'Menyimpan Jadwal...' : 'Konfirmasi Jadwal'}
+            </button>
+          </motion.form>
+        )}
 
         {thumbnailUrl && (
           <motion.div

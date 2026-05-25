@@ -15,6 +15,7 @@ import nodeMachineId from "node-machine-id";
 const { machineIdSync } = nodeMachineId;
 import db from "./lib/db";
 import { register, login, authMiddleware } from "./lib/auth";
+import { prepareAssSubtitles } from "./lib/subtitles";
 
 dotenv.config();
 
@@ -262,7 +263,7 @@ function getSubtitleStyle(captionStyle: 'normal' | 'tiktok'): string {
 
 // === FEATURE: Face Tracking Reframing ===
 // Calls face_reframe.py in 'track' mode — smooth per-frame face-following crop
-import { spawn } from 'child_process';
+
 
 const venvPy = (() => {
   const isPackaged = __dirname.includes('app.asar');
@@ -328,6 +329,215 @@ async function generateThumbnailPy(videoPath: string, title: string, hook: strin
     if (result.status === 'ok' && fs.existsSync(thumbPath)) return thumbPath;
   } catch { }
   return null;
+}
+
+async function processClipVideo(
+  inputPath: string,
+  outputPath: string,
+  options: {
+    format: string;
+    videoMode: string;
+    useSubtitles: boolean;
+    captionStyle: 'normal' | 'tiktok';
+    startSec: number;
+    info: any;
+    userId: number;
+  }
+): Promise<{ rawSubPath: string | null; cmdsPath: string | null }> {
+  const { format, videoMode, useSubtitles, captionStyle, startSec, info, userId } = options;
+
+  const settings = db.prepare('SELECT satisfying_video_path FROM settings WHERE user_id = ?').get(userId) as any;
+  const satisfyingPath = settings?.satisfying_video_path || '';
+  const hasSatisfying = format === 'portrait' && videoMode === 'split' && satisfyingPath && fs.existsSync(satisfyingPath);
+
+  let subInfo: any = null;
+  if (useSubtitles) {
+    if (captionStyle === 'tiktok') {
+      subInfo = await prepareAssSubtitles(info, startSec);
+    } else {
+      subInfo = await prepareSubtitles(info, startSec, 'normal');
+    }
+  }
+
+  let faceTimeline: { cmdsPath: string; crop_w: number; crop_h: number } | null = null;
+  if (format === 'portrait' && videoMode === 'reframe') {
+    faceTimeline = await runFaceTimeline(inputPath);
+  }
+
+  let job = ffmpeg(inputPath);
+  if (hasSatisfying) {
+    job = job.input(satisfyingPath);
+  }
+
+  const outputOpts = [
+    "-c:v libx264",
+    "-crf 18",
+    "-preset medium",
+    "-profile:v high",
+    "-level 4.2",
+    "-pix_fmt yuv420p",
+    "-c:a aac",
+    "-b:a 256k",
+    "-ar 48000"
+  ];
+  if (hasSatisfying) {
+    outputOpts.push("-shortest");
+  }
+  job = job.outputOptions(outputOpts);
+
+  if (format === 'portrait') {
+    if (videoMode === 'split') {
+      let complex = '';
+      if (hasSatisfying) {
+        complex = `[0:v]crop=ih*9/16:ih,scale=1080:960[top];[1:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];[top][bottom]vstack=inputs=2[vid]`;
+      } else {
+        complex = `[0:v]split[top][bottom];[top]crop=iw/2:ih:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[t];[bottom]crop=iw/2:ih:iw/2:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[b];[t][b]vstack=inputs=2[vid]`;
+      }
+
+      if (subInfo) {
+        const subFilter = captionStyle === 'tiktok'
+          ? `subtitles='${subInfo.ffmpegPath}'`
+          : `subtitles='${subInfo.ffmpegPath}':force_style='${getSubtitleStyle('normal')}'`;
+        complex += `;[vid]${subFilter}[vfinal]`;
+        job = job.complexFilter(complex, 'vfinal');
+      } else {
+        job = job.complexFilter(complex, 'vid');
+      }
+    } else {
+      const filters: string[] = [];
+      if (videoMode === 'reframe' && faceTimeline) {
+        const cmdsEsc = faceTimeline.cmdsPath.replace(/\\/g, '/').replace(':', '\\:');
+        filters.push(`sendcmd=f='${cmdsEsc}',crop=${faceTimeline.crop_w}:${faceTimeline.crop_h}`);
+      } else {
+        filters.push('crop=ih*9/16:ih');
+      }
+      if (subInfo) {
+        if (captionStyle === 'tiktok') {
+          filters.push(`subtitles='${subInfo.ffmpegPath}'`);
+        } else {
+          filters.push(`subtitles='${subInfo.ffmpegPath}':force_style='${getSubtitleStyle('normal')}'`);
+        }
+      }
+      job = job.videoFilters(filters);
+    }
+  } else {
+    if (subInfo) {
+      if (captionStyle === 'tiktok') {
+        job = job.videoFilters([`subtitles='${subInfo.ffmpegPath}'`]);
+      } else {
+        job = job.videoFilters([`subtitles='${subInfo.ffmpegPath}':force_style='${getSubtitleStyle('normal')}'`]);
+      }
+    }
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    job.save(outputPath)
+      .on('end', () => resolve())
+      .on('error', (err) => reject(err));
+  });
+
+  return {
+    rawSubPath: subInfo ? subInfo.rawPath : null,
+    cmdsPath: faceTimeline ? faceTimeline.cmdsPath : null
+  };
+}
+
+async function uploadToInstagramReels(videoPath: string, caption: string, igAccountId: string, accessToken: string) {
+  const formData = new FormData();
+  const fileBlob = new Blob([fs.readFileSync(videoPath)]);
+  formData.append('file', fileBlob, 'video.mp4');
+
+  const tempRes = await fetch('https://tmpfiles.org/api/v1/upload', {
+    method: 'POST',
+    body: formData
+  });
+  if (!tempRes.ok) throw new Error("Gagal mengunggah berkas ke server hosting sementara");
+  const tempData = (await tempRes.json()) as any;
+  const rawVideoUrl = tempData.data.url.replace('https://tmpfiles.org/', 'https://tmpfiles.org/dl/');
+
+  const containerRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media?media_type=REELS&video_url=${encodeURIComponent(rawVideoUrl)}&caption=${encodeURIComponent(caption)}&access_token=${accessToken}`, {
+    method: 'POST'
+  });
+  if (!containerRes.ok) {
+    const err = (await containerRes.json()) as any;
+    throw new Error("Instagram container init failed: " + (err.error?.message || containerRes.statusText));
+  }
+  const containerData = (await containerRes.json()) as any;
+  const creationId = containerData.id;
+
+  let ready = false;
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 10000));
+    const statusRes = await fetch(`https://graph.facebook.com/v19.0/${creationId}?fields=status_code&access_token=${accessToken}`);
+    if (statusRes.ok) {
+      const statusData = (await statusRes.json()) as any;
+      if (statusData.status_code === 'FINISHED') {
+        ready = true;
+        break;
+      } else if (statusData.status_code === 'ERROR') {
+        throw new Error("Instagram processing error");
+      }
+    }
+  }
+  if (!ready) throw new Error("Instagram processing timeout");
+
+  const publishRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media_publish?creation_id=${creationId}&access_token=${accessToken}`, {
+    method: 'POST'
+  });
+  if (!publishRes.ok) {
+    const err = (await publishRes.json()) as any;
+    throw new Error("Instagram publish failed: " + (err.error?.message || publishRes.statusText));
+  }
+  const publishData = (await publishRes.json()) as any;
+  return publishData.id;
+}
+
+async function uploadToTikTok(videoPath: string, title: string, accessToken: string) {
+  const stats = fs.statSync(videoPath);
+  const videoSize = stats.size;
+
+  const initRes = await fetch('https://open.tiktokapis.com/v2/post/publish/video/init/', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      post_info: {
+        title: title.substring(0, 150),
+        privacy_level: "PUBLIC_TO_EVERYONE",
+        disable_comment: false,
+        disable_duet: false,
+        disable_stitch: false
+      },
+      source: "FILE_UPLOAD",
+      video_size: videoSize
+    })
+  });
+
+  if (!initRes.ok) {
+    const err = (await initRes.json()) as any;
+    throw new Error("TikTok init failed: " + (err.error?.message || initRes.statusText));
+  }
+  const initData = (await initRes.json()) as any;
+  const uploadUrl = initData.data.upload_url;
+  const publishId = initData.data.publish_id;
+
+  const fileStream = fs.createReadStream(videoPath);
+  const uploadRes = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Range': `bytes 0-${videoSize - 1}/${videoSize}`,
+      'Content-Type': 'video/mp4'
+    },
+    body: fileStream as any
+  });
+
+  if (!uploadRes.ok) {
+    throw new Error("TikTok upload failed: " + uploadRes.statusText);
+  }
+
+  return publishId;
 }
 
 
@@ -407,6 +617,130 @@ function generateShortlineSRT(rawSRT: string): string {
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  const schedulerDir = process.env.APPDATA 
+    ? path.join(process.env.APPDATA, 'ViralClipAI', 'scheduler_videos')
+    : path.resolve('./scheduler_videos');
+  if (!fs.existsSync(schedulerDir)) {
+    fs.mkdirSync(schedulerDir, { recursive: true });
+  }
+
+  // Background Scheduler Worker
+  const runSchedulerWorker = async () => {
+    try {
+      const jobs = db.prepare("SELECT * FROM scheduler_queue WHERE status = 'pending' AND CAST(scheduled_time AS INTEGER) <= ?").all(Date.now()) as any[];
+
+      for (const job of jobs) {
+        db.prepare("UPDATE scheduler_queue SET status = 'processing' WHERE id = ?").run(job.id);
+        console.log(`[Scheduler] Processing job ${job.id} for user ${job.user_id} on platform ${job.platform}`);
+
+        try {
+          if (!fs.existsSync(job.video_path)) {
+            throw new Error("File video tidak ditemukan di disk");
+          }
+
+          if (job.platform === 'youtube') {
+            const tokenRow = db.prepare('SELECT tokens FROM tokens WHERE user_id = ?').get(job.user_id) as any;
+            if (!tokenRow) throw new Error("YouTube tidak terhubung");
+            const userOauth = getOAuthClient(job.user_id);
+            userOauth.setCredentials(JSON.parse(tokenRow.tokens));
+
+            const youtube = google.youtube({ version: "v3", auth: userOauth });
+            const response = await youtube.videos.insert({
+              part: ["snippet", "status"],
+              requestBody: {
+                snippet: { title: job.title.substring(0, 100), description: `${job.description}\n\n#shorts #viralclipai`, tags: job.tags ? JSON.parse(job.tags) : [], categoryId: "22" },
+                status: { privacyStatus: "public", selfDeclaredMadeForKids: false }
+              },
+              media: { body: fs.createReadStream(job.video_path) }
+            });
+            const videoId = response.data.id!;
+            
+            try {
+              const hook = job.description?.split(' ').slice(0, 5).join(' ') || '';
+              const thumbPath = await generateThumbnailPy(job.video_path, job.title, hook);
+              if (thumbPath) {
+                await youtube.thumbnails.set({
+                  videoId,
+                  media: { mimeType: 'image/jpeg', body: fs.createReadStream(thumbPath) }
+                });
+                fs.unlinkSync(thumbPath);
+              }
+            } catch (thumbErr) {
+              console.warn('[Scheduler] Thumbnail skipped:', thumbErr);
+            }
+
+            db.prepare("UPDATE scheduler_queue SET status = 'success' WHERE id = ?").run(job.id);
+            saveToHistory(job.user_id, { type: 'upload', title: job.title, url: `https://youtube.com/shorts/${videoId}`, videoId, status: 'success' });
+            if (fs.existsSync(job.video_path)) fs.unlinkSync(job.video_path);
+
+          } else if (job.platform === 'facebook') {
+            const settings = db.prepare('SELECT fb_page_access_token, fb_page_id FROM settings WHERE user_id = ?').get(job.user_id) as any;
+            if (!settings || !settings.fb_page_access_token || !settings.fb_page_id) {
+              throw new Error("Facebook tidak dikonfigurasi di Pengaturan");
+            }
+
+            const formData = new FormData();
+            const fileBlob = new Blob([fs.readFileSync(job.video_path)]);
+            formData.append('source', fileBlob, 'video.mp4');
+            formData.append('title', job.title);
+            formData.append('description', `${job.description}\n\n#shorts #viralclipai`);
+            formData.append('access_token', settings.fb_page_access_token);
+
+            const fbResponse = await fetch(`https://graph.facebook.com/v19.0/${settings.fb_page_id}/videos`, {
+              method: 'POST',
+              body: formData
+            });
+            if (!fbResponse.ok) {
+              const fbErr = (await fbResponse.json()) as any;
+              throw new Error(fbErr.error?.message || "Gagal mengunggah ke Facebook");
+            }
+            const fbResult = (await fbResponse.json()) as any;
+            const videoId = fbResult.id;
+
+            db.prepare("UPDATE scheduler_queue SET status = 'success' WHERE id = ?").run(job.id);
+            saveToHistory(job.user_id, { type: 'upload_facebook', title: job.title, url: `https://facebook.com/${videoId}`, videoId, status: 'success' });
+            if (fs.existsSync(job.video_path)) fs.unlinkSync(job.video_path);
+
+          } else if (job.platform === 'instagram') {
+            const settings = db.prepare('SELECT fb_page_access_token, ig_business_account_id FROM settings WHERE user_id = ?').get(job.user_id) as any;
+            if (!settings || !settings.fb_page_access_token || !settings.ig_business_account_id) {
+              throw new Error("Instagram tidak dikonfigurasi di Pengaturan");
+            }
+
+            const caption = `${job.title}\n\n${job.description}\n\n#shorts #viralclipai`;
+            const videoId = await uploadToInstagramReels(job.video_path, caption, settings.ig_business_account_id, settings.fb_page_access_token);
+
+            db.prepare("UPDATE scheduler_queue SET status = 'success' WHERE id = ?").run(job.id);
+            saveToHistory(job.user_id, { type: 'upload_instagram', title: job.title, url: `https://instagram.com/reel/${videoId}`, videoId, status: 'success' });
+            if (fs.existsSync(job.video_path)) fs.unlinkSync(job.video_path);
+
+          } else if (job.platform === 'tiktok') {
+            const settings = db.prepare('SELECT tiktok_access_token FROM settings WHERE user_id = ?').get(job.user_id) as any;
+            if (!settings || !settings.tiktok_access_token) {
+              throw new Error("TikTok tidak terhubung di Pengaturan");
+            }
+
+            const caption = `${job.title}\n\n${job.description}`;
+            const videoId = await uploadToTikTok(job.video_path, caption, settings.tiktok_access_token);
+
+            db.prepare("UPDATE scheduler_queue SET status = 'success' WHERE id = ?").run(job.id);
+            saveToHistory(job.user_id, { type: 'upload_tiktok', title: job.title, url: `https://tiktok.com/@share/${videoId}`, videoId, status: 'success' });
+            if (fs.existsSync(job.video_path)) fs.unlinkSync(job.video_path);
+          }
+
+        } catch (err: any) {
+          console.error(`[Scheduler] Job ${job.id} failed:`, err.message);
+          db.prepare("UPDATE scheduler_queue SET status = 'failed', error_message = ? WHERE id = ?").run(err.message, job.id);
+          saveToHistory(job.user_id, { type: 'upload', title: job.title, status: 'error', error: `Scheduler error: ${err.message}` });
+        }
+      }
+    } catch (workerErr: any) {
+      console.error("[Scheduler Worker] Error:", workerErr.message);
+    }
+  };
+
+  setInterval(runSchedulerWorker, 30 * 1000); // Check every 30 seconds
 
   ffmpeg.setFfmpegPath(resolvedFfmpegPath);
 
@@ -724,7 +1058,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     //   extractorArgs: 'youtube:player_client=android'
     // } as any) as any;
     // const subInfo = await prepareSubtitles(clipInfo, clip.startTimeSeconds, 'tiktok');
-    const subInfo = null;
+    const subInfo: any = null;
 
     // Build filter chain: face crop (subtitles disabled)
     const filters: string[] = [cropFilter];
@@ -867,12 +1201,12 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     });
 
     if (!fbResponse.ok) {
-      const fbErr = await fbResponse.json();
+      const fbErr = (await fbResponse.json()) as any;
       if (fs.existsSync(tempOutPath)) fs.unlinkSync(tempOutPath);
       throw new Error(fbErr.error?.message || "Gagal mengunggah ke Facebook");
     }
 
-    const fbResult = await fbResponse.json();
+    const fbResult = (await fbResponse.json()) as any;
     const videoId = fbResult.id;
 
     if (fs.existsSync(tempOutPath)) fs.unlinkSync(tempOutPath);
@@ -1184,66 +1518,24 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         ffmpegLocation: resolvedFfmpegPath
       } as any);
 
-      const style = (captionStyle === 'tiktok') ? 'tiktok' : 'normal';
-      const subInfo = (useSubtitles === 'true' || useSubtitles === true) ? await prepareSubtitles(info, startSec, style) : null;
+      const tempOutPath = path.join(os.tmpdir(), `clip_out_${Date.now()}.mp4`);
+      const cleanup = await processClipVideo(tempVideoPath, tempOutPath, {
+        format: format as string,
+        videoMode: videoMode as string,
+        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+        captionStyle: captionStyle as 'normal' | 'tiktok',
+        startSec,
+        info,
+        userId: req.user.id
+      });
 
-      // Face tracking or Split Screen
-      let faceTimeline: { cmdsPath: string; crop_w: number; crop_h: number } | null = null;
-      if (format === 'portrait' && videoMode === 'reframe') {
-        faceTimeline = await runFaceTimeline(tempVideoPath);
-      }
-
-      let job = ffmpeg(tempVideoPath).format("mp4").outputOptions([
-        "-c:v libx264",
-        "-crf 18",  // Kualitas lebih tinggi
-        "-preset medium",  // Preset lebih baik untuk kualitas
-        "-profile:v high",
-        "-level 4.2",
-        "-pix_fmt yuv420p",
-        "-c:a aac",
-        "-b:a 256k",  // Audio bitrate lebih tinggi
-        "-ar 48000",
-        "-movflags frag_keyframe+empty_moov+faststart"
-      ]);
-
-      if (format === 'portrait') {
-        if (videoMode === 'split') {
-          let complex = `[0:v]split[top][bottom];[top]crop=iw/2:ih:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[t];[bottom]crop=iw/2:ih:iw/2:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[b];[t][b]vstack=inputs=2[vid]`;
-          if (subInfo) {
-            complex += `;[vid]subtitles='${subInfo.ffmpegPath}':force_style='${getSubtitleStyle(style)}'[vfinal]`;
-            job = job.complexFilter(complex, 'vfinal');
-          } else {
-            job = job.complexFilter(complex, 'vid');
-          }
-        } else {
-          const filters: string[] = [];
-          if (videoMode === 'reframe' && faceTimeline) {
-            const cmdsEsc = faceTimeline.cmdsPath.replace(/\\/g, '/').replace(':', '\\:');
-            filters.push(`sendcmd=f='${cmdsEsc}',crop=${faceTimeline.crop_w}:${faceTimeline.crop_h}`);
-          } else {
-            filters.push('crop=ih*9/16:ih'); // centre crop fallback
-          }
-          if (subInfo) filters.push(`subtitles='${subInfo.ffmpegPath}':force_style='${getSubtitleStyle(style)}'`);
-          job = job.videoFilters(filters);
-        }
-      } else {
-        if (subInfo) job = job.videoFilters([`subtitles='${subInfo.ffmpegPath}':force_style='${getSubtitleStyle(style)}'`]);
-      }
-
-      job
-        .on("end", () => {
-          if (subInfo && fs.existsSync(subInfo.rawPath)) fs.unlinkSync(subInfo.rawPath);
-          if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-          if (faceTimeline && fs.existsSync(faceTimeline.cmdsPath)) fs.unlinkSync(faceTimeline.cmdsPath);
-          saveToHistory(req.user.id, { type: 'download', title, url, status: 'success' });
-        })
-        .on("error", (err: any) => {
-          if (subInfo && fs.existsSync(subInfo.rawPath)) fs.unlinkSync(subInfo.rawPath);
-          if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-          if (faceTimeline && fs.existsSync(faceTimeline.cmdsPath)) fs.unlinkSync(faceTimeline.cmdsPath);
-        });
-
-      job.pipe(res, { end: true });
+      res.sendFile(tempOutPath, (err) => {
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempOutPath)) fs.unlinkSync(tempOutPath);
+        saveToHistory(req.user.id, { type: 'download', title, url, status: err ? 'error' : 'success' });
+      });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -1287,101 +1579,59 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       } as any);
 
       const tempPath = path.join(os.tmpdir(), `temp_upload_${Date.now()}.mp4`);
-
-      const capStyle2 = (captionStyle === 'tiktok') ? 'tiktok' : 'normal';
-      const subInfo2 = (useSubtitles === 'true' || useSubtitles === true) ? await prepareSubtitles(info, startSec, capStyle2) : null;
-
-      let faceTimeline2: { cmdsPath: string; crop_w: number; crop_h: number } | null = null;
-      if (format === 'portrait' && videoMode === 'reframe') {
-        faceTimeline2 = await runFaceTimeline(tempVideoPath);
-      }
-
-      let job2 = ffmpeg(tempVideoPath).format("mp4").outputOptions([
-        "-c:v libx264",
-        "-crf 18",  // Kualitas lebih tinggi
-        "-preset medium",  // Preset lebih baik untuk kualitas
-        "-profile:v high",
-        "-level 4.2",
-        "-pix_fmt yuv420p",
-        "-c:a aac",
-        "-b:a 256k",  // Audio bitrate lebih tinggi
-        "-ar 48000",
-        "-movflags frag_keyframe+empty_moov+faststart"
-      ]);
-
-      if (format === 'portrait') {
-        if (videoMode === 'split') {
-          let complex = `[0:v]split[top][bottom];[top]crop=iw/2:ih:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[t];[bottom]crop=iw/2:ih:iw/2:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[b];[t][b]vstack=inputs=2[vid]`;
-          if (subInfo2) {
-            complex += `;[vid]subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'[vfinal]`;
-            job2 = job2.complexFilter(complex, 'vfinal');
-          } else {
-            job2 = job2.complexFilter(complex, 'vid');
-          }
-        } else {
-          const filters2: string[] = [];
-          if (videoMode === 'reframe' && faceTimeline2) {
-            const cmdsEsc2 = faceTimeline2.cmdsPath.replace(/\\/g, '/').replace(':', '\\:');
-            filters2.push(`sendcmd=f='${cmdsEsc2}',crop=${faceTimeline2.crop_w}:${faceTimeline2.crop_h}`);
-          } else {
-            filters2.push('crop=ih*9/16:ih');
-          }
-          if (subInfo2) filters2.push(`subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'`);
-          job2 = job2.videoFilters(filters2);
-        }
-      } else {
-        if (subInfo2) job2 = job2.videoFilters([`subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'`]);
-      }
-
-      job2.save(tempPath).on('end', async () => {
-        if (subInfo2 && fs.existsSync(subInfo2.rawPath)) fs.unlinkSync(subInfo2.rawPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (faceTimeline2 && fs.existsSync(faceTimeline2.cmdsPath)) fs.unlinkSync(faceTimeline2.cmdsPath);
-
-        try {
-          const youtube = google.youtube({ version: "v3", auth: userOauth });
-          const response = await youtube.videos.insert({
-            part: ["snippet", "status"],
-            requestBody: {
-              snippet: { title: title.substring(0, 100), description: `${description}\n\n#shorts #viralclipai`, tags, categoryId: "22" },
-              status: { privacyStatus: "public", selfDeclaredMadeForKids: false }
-            },
-            media: { body: fs.createReadStream(tempPath) }
-          });
-          const videoId = response.data.id!;
-
-          // Auto-generate and upload clickbait thumbnail
-          try {
-            const hook = description?.split(' ').slice(0, 5).join(' ') || '';
-            const thumbPath = await generateThumbnailPy(tempPath, title, hook);
-            if (thumbPath) {
-              await youtube.thumbnails.set({
-                videoId,
-                media: { mimeType: 'image/jpeg', body: require('fs').createReadStream(thumbPath) }
-              });
-              fs.unlinkSync(thumbPath);
-            }
-          } catch (thumbErr) {
-            console.warn('Thumbnail upload skipped:', thumbErr);
-          }
-
-          fs.unlinkSync(tempPath);
-          saveToHistory(req.user.id, { type: 'upload', title, url, videoId, status: 'success' });
-          res.json({ success: true, videoId });
-        } catch (uploadErr: any) {
-          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-          saveToHistory(req.user.id, { type: 'upload', title, url, status: 'error' });
-          res.status(500).json({ error: uploadErr.message });
-        }
-      }).on('error', (err: any) => {
-        if (subInfo2 && fs.existsSync(subInfo2.rawPath)) fs.unlinkSync(subInfo2.rawPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (faceTimeline2 && fs.existsSync(faceTimeline2.cmdsPath)) fs.unlinkSync(faceTimeline2.cmdsPath);
-
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-        res.status(500).json({ error: err.message });
+      const cleanup = await processClipVideo(tempVideoPath, tempPath, {
+        format: format as string,
+        videoMode: videoMode as string,
+        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+        captionStyle: captionStyle as 'normal' | 'tiktok',
+        startSec,
+        info,
+        userId: req.user.id
       });
 
+      try {
+        const youtube = google.youtube({ version: "v3", auth: userOauth });
+        const response = await youtube.videos.insert({
+          part: ["snippet", "status"],
+          requestBody: {
+            snippet: { title: title.substring(0, 100), description: `${description}\n\n#shorts #viralclipai`, tags, categoryId: "22" },
+            status: { privacyStatus: "public", selfDeclaredMadeForKids: false }
+          },
+          media: { body: fs.createReadStream(tempPath) }
+        });
+        const videoId = response.data.id!;
+
+        // Auto-generate and upload clickbait thumbnail
+        try {
+          const hook = description?.split(' ').slice(0, 5).join(' ') || '';
+          const thumbPath = await generateThumbnailPy(tempPath, title, hook);
+          if (thumbPath) {
+            await youtube.thumbnails.set({
+              videoId,
+              media: { mimeType: 'image/jpeg', body: fs.createReadStream(thumbPath) }
+            });
+            fs.unlinkSync(thumbPath);
+          }
+        } catch (thumbErr) {
+          console.warn('Thumbnail upload skipped:', thumbErr);
+        }
+
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+        saveToHistory(req.user.id, { type: 'upload', title, url, videoId, status: 'success' });
+        res.json({ success: true, videoId });
+      } catch (uploadErr: any) {
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+        saveToHistory(req.user.id, { type: 'upload', title, url, status: 'error' });
+        res.status(500).json({ error: uploadErr.message });
+      }
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -1416,96 +1666,282 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       } as any);
 
       const tempPath = path.join(os.tmpdir(), `temp_upload_fb_${Date.now()}.mp4`);
-
-      const capStyle2 = (captionStyle === 'tiktok') ? 'tiktok' : 'normal';
-      const subInfo2 = (useSubtitles === 'true' || useSubtitles === true) ? await prepareSubtitles(info, startSec, capStyle2) : null;
-
-      let faceTimeline2: { cmdsPath: string; crop_w: number; crop_h: number } | null = null;
-      if (format === 'portrait' && videoMode === 'reframe') {
-        faceTimeline2 = await runFaceTimeline(tempVideoPath);
-      }
-
-      let job2 = ffmpeg(tempVideoPath).format("mp4").outputOptions([
-        "-c:v libx264",
-        "-crf 18",
-        "-preset medium",
-        "-profile:v high",
-        "-level 4.2",
-        "-pix_fmt yuv420p",
-        "-c:a aac",
-        "-b:a 256k",
-        "-ar 48000",
-        "-movflags frag_keyframe+empty_moov+faststart"
-      ]);
-
-      if (format === 'portrait') {
-        if (videoMode === 'split') {
-          let complex = `[0:v]split[top][bottom];[top]crop=iw/2:ih:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[t];[bottom]crop=iw/2:ih:iw/2:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[b];[t][b]vstack=inputs=2[vid]`;
-          if (subInfo2) {
-            complex += `;[vid]subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'[vfinal]`;
-            job2 = job2.complexFilter(complex, 'vfinal');
-          } else {
-            job2 = job2.complexFilter(complex, 'vid');
-          }
-        } else {
-          const filters2: string[] = [];
-          if (videoMode === 'reframe' && faceTimeline2) {
-            const cmdsEsc2 = faceTimeline2.cmdsPath.replace(/\\/g, '/').replace(':', '\\:');
-            filters2.push(`sendcmd=f='${cmdsEsc2}',crop=${faceTimeline2.crop_w}:${faceTimeline2.crop_h}`);
-          } else {
-            filters2.push('crop=ih*9/16:ih');
-          }
-          if (subInfo2) filters2.push(`subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'`);
-          job2 = job2.videoFilters(filters2);
-        }
-      } else {
-        if (subInfo2) job2 = job2.videoFilters([`subtitles='${subInfo2.ffmpegPath}':force_style='${getSubtitleStyle(capStyle2)}'`]);
-      }
-
-      job2.save(tempPath).on('end', async () => {
-        if (subInfo2 && fs.existsSync(subInfo2.rawPath)) fs.unlinkSync(subInfo2.rawPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (faceTimeline2 && fs.existsSync(faceTimeline2.cmdsPath)) fs.unlinkSync(faceTimeline2.cmdsPath);
-
-        try {
-          const formData = new FormData();
-          const fileBlob = new Blob([fs.readFileSync(tempPath)]);
-          formData.append('source', fileBlob, 'video.mp4');
-          formData.append('title', title);
-          formData.append('description', `${description}\n\n#shorts #viralclipai`);
-          formData.append('access_token', settings.fb_page_access_token);
-
-          const fbResponse = await fetch(`https://graph.facebook.com/v19.0/${settings.fb_page_id}/videos`, {
-            method: 'POST',
-            body: formData
-          });
-
-          if (!fbResponse.ok) {
-            const fbErr = await fbResponse.json();
-            throw new Error(fbErr.error?.message || "Gagal mengunggah ke Facebook");
-          }
-
-          const fbResult = await fbResponse.json();
-          const videoId = fbResult.id;
-
-          fs.unlinkSync(tempPath);
-          saveToHistory(req.user.id, { type: 'upload_facebook', title, url, videoId, status: 'success' });
-          res.json({ success: true, videoId });
-        } catch (uploadErr: any) {
-          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-          saveToHistory(req.user.id, { type: 'upload_facebook', title, url, status: 'error', error: uploadErr.message });
-          res.status(500).json({ error: uploadErr.message });
-        }
-      }).on('error', (err: any) => {
-        if (subInfo2 && fs.existsSync(subInfo2.rawPath)) fs.unlinkSync(subInfo2.rawPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (faceTimeline2 && fs.existsSync(faceTimeline2.cmdsPath)) fs.unlinkSync(faceTimeline2.cmdsPath);
-
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-        res.status(500).json({ error: err.message });
+      const cleanup = await processClipVideo(tempVideoPath, tempPath, {
+        format: format as string,
+        videoMode: videoMode as string,
+        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+        captionStyle: captionStyle as 'normal' | 'tiktok',
+        startSec,
+        info,
+        userId: req.user.id
       });
 
+      try {
+        const formData = new FormData();
+        const fileBlob = new Blob([fs.readFileSync(tempPath)]);
+        formData.append('source', fileBlob, 'video.mp4');
+        formData.append('title', title);
+        formData.append('description', `${description}\n\n#shorts #viralclipai`);
+        formData.append('access_token', settings.fb_page_access_token);
+
+        const fbResponse = await fetch(`https://graph.facebook.com/v19.0/${settings.fb_page_id}/videos`, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!fbResponse.ok) {
+          const fbErr = (await fbResponse.json()) as any;
+          throw new Error(fbErr.error?.message || "Gagal mengunggah ke Facebook");
+        }
+
+        const fbResult = (await fbResponse.json()) as any;
+        const videoId = fbResult.id;
+
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+        saveToHistory(req.user.id, { type: 'upload_facebook', title, url, videoId, status: 'success' });
+        res.json({ success: true, videoId });
+      } catch (uploadErr: any) {
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+        saveToHistory(req.user.id, { type: 'upload_facebook', title, url, status: 'error', error: uploadErr.message });
+        res.status(500).json({ error: uploadErr.message });
+      }
     } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/upload/instagram", authMiddleware, express.json(), async (req: any, res) => {
+    try {
+      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode } = req.body;
+      const settings = db.prepare('SELECT fb_page_access_token, ig_business_account_id FROM settings WHERE user_id = ?').get(req.user.id) as any;
+      if (!settings || !settings.fb_page_access_token || !settings.ig_business_account_id) {
+        return res.status(400).json({ error: "Instagram Business Account ID atau Meta Access Token belum diatur di Pengaturan." });
+      }
+
+      const startSec = parseFloat(start as string);
+      const endSec = parseFloat(end as string);
+      const startIso = new Date(startSec * 1000).toISOString().substring(11, 19);
+      const endIso = new Date(endSec * 1000).toISOString().substring(11, 19);
+      const sectionStr = `*${startIso}-${endIso}`;
+
+      const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
+      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
+      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+
+      await youtubedl(url as string, {
+        format: ytdlFormat,
+        downloadSections: sectionStr,
+        forceKeyframesAtCuts: true,
+        output: tempVideoPath,
+        noWarnings: true,
+        noCheckCertificates: true,
+        extractorArgs: 'youtube:player_client=android',
+        ffmpegLocation: resolvedFfmpegPath
+      } as any);
+
+      const tempPath = path.join(os.tmpdir(), `temp_upload_ig_${Date.now()}.mp4`);
+      const cleanup = await processClipVideo(tempVideoPath, tempPath, {
+        format: format as string,
+        videoMode: videoMode as string,
+        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+        captionStyle: captionStyle as 'normal' | 'tiktok',
+        startSec,
+        info,
+        userId: req.user.id
+      });
+
+      try {
+        const caption = `${title}\n\n${description}\n\n#shorts #viralclipai`;
+        const videoId = await uploadToInstagramReels(tempPath, caption, settings.ig_business_account_id, settings.fb_page_access_token);
+
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+        saveToHistory(req.user.id, { type: 'upload_instagram', title, url, videoId, status: 'success' });
+        res.json({ success: true, videoId });
+      } catch (uploadErr: any) {
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+        saveToHistory(req.user.id, { type: 'upload_instagram', title, url, status: 'error', error: uploadErr.message });
+        res.status(500).json({ error: uploadErr.message });
+      }
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/upload/tiktok", authMiddleware, express.json(), async (req: any, res) => {
+    try {
+      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode } = req.body;
+      const settings = db.prepare('SELECT tiktok_access_token FROM settings WHERE user_id = ?').get(req.user.id) as any;
+      if (!settings || !settings.tiktok_access_token) {
+        return res.status(400).json({ error: "TikTok Access Token belum diatur di Pengaturan." });
+      }
+
+      const startSec = parseFloat(start as string);
+      const endSec = parseFloat(end as string);
+      const startIso = new Date(startSec * 1000).toISOString().substring(11, 19);
+      const endIso = new Date(endSec * 1000).toISOString().substring(11, 19);
+      const sectionStr = `*${startIso}-${endIso}`;
+
+      const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
+      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
+      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+
+      await youtubedl(url as string, {
+        format: ytdlFormat,
+        downloadSections: sectionStr,
+        forceKeyframesAtCuts: true,
+        output: tempVideoPath,
+        noWarnings: true,
+        noCheckCertificates: true,
+        extractorArgs: 'youtube:player_client=android',
+        ffmpegLocation: resolvedFfmpegPath
+      } as any);
+
+      const tempPath = path.join(os.tmpdir(), `temp_upload_tt_${Date.now()}.mp4`);
+      const cleanup = await processClipVideo(tempVideoPath, tempPath, {
+        format: format as string,
+        videoMode: videoMode as string,
+        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+        captionStyle: captionStyle as 'normal' | 'tiktok',
+        startSec,
+        info,
+        userId: req.user.id
+      });
+
+      try {
+        const caption = `${title}\n\n${description}`;
+        const videoId = await uploadToTikTok(tempPath, caption, settings.tiktok_access_token);
+
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+        saveToHistory(req.user.id, { type: 'upload_tiktok', title, url, videoId, status: 'success' });
+        res.json({ success: true, videoId });
+      } catch (uploadErr: any) {
+        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+        saveToHistory(req.user.id, { type: 'upload_tiktok', title, url, status: 'error', error: uploadErr.message });
+        res.status(500).json({ error: uploadErr.message });
+      }
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/scheduler/add", authMiddleware, express.json(), async (req: any, res) => {
+    try {
+      const { url, start, end, format, title, description, tags, quality, useSubtitles, captionStyle, videoMode, scheduledTime, platform } = req.body;
+      if (!scheduledTime || !platform) {
+        return res.status(400).json({ error: "scheduledTime dan platform wajib diisi" });
+      }
+
+      const schedulerDir = process.env.APPDATA 
+        ? path.join(process.env.APPDATA, 'ViralClipAI', 'scheduler_videos')
+        : path.resolve('./scheduler_videos');
+      if (!fs.existsSync(schedulerDir)) {
+        fs.mkdirSync(schedulerDir, { recursive: true });
+      }
+
+      const startSec = parseFloat(start as string);
+      const endSec = parseFloat(end as string);
+      const startIso = new Date(startSec * 1000).toISOString().substring(11, 19);
+      const endIso = new Date(endSec * 1000).toISOString().substring(11, 19);
+      const sectionStr = `*${startIso}-${endIso}`;
+
+      const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
+      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
+      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+
+      await youtubedl(url as string, {
+        format: ytdlFormat,
+        downloadSections: sectionStr,
+        forceKeyframesAtCuts: true,
+        output: tempVideoPath,
+        noWarnings: true,
+        noCheckCertificates: true,
+        extractorArgs: 'youtube:player_client=android',
+        ffmpegLocation: resolvedFfmpegPath
+      } as any);
+
+      const jobId = Date.now().toString() + Math.random().toString(36).substring(7);
+      const finalVideoPath = path.join(schedulerDir, `sched_${jobId}.mp4`);
+
+      const cleanup = await processClipVideo(tempVideoPath, finalVideoPath, {
+        format: format as string,
+        videoMode: videoMode as string,
+        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+        captionStyle: captionStyle as 'normal' | 'tiktok',
+        startSec,
+        info,
+        userId: req.user.id
+      });
+
+      if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
+      if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
+      if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+
+      db.prepare(`
+        INSERT INTO scheduler_queue (id, user_id, platform, video_path, title, description, tags, scheduled_time, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+      `).run(
+        jobId,
+        req.user.id,
+        platform,
+        finalVideoPath,
+        title,
+        description,
+        tags ? JSON.stringify(tags) : null,
+        scheduledTime.toString()
+      );
+
+      res.json({ success: true, jobId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/scheduler/list", authMiddleware, (req: any, res) => {
+    try {
+      const list = db.prepare("SELECT * FROM scheduler_queue WHERE user_id = ? ORDER BY CAST(scheduled_time AS INTEGER) ASC").all(req.user.id) as any[];
+      res.json(list.map(item => ({
+        ...item,
+        tags: item.tags ? JSON.parse(item.tags) : []
+      })));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/scheduler/remove", authMiddleware, express.json(), (req: any, res) => {
+    try {
+      const { id } = req.body;
+      const job = db.prepare("SELECT video_path FROM scheduler_queue WHERE id = ? AND user_id = ?").get(id, req.user.id) as any;
+      if (job) {
+        if (fs.existsSync(job.video_path)) {
+          fs.unlinkSync(job.video_path);
+        }
+        db.prepare("DELETE FROM scheduler_queue WHERE id = ?").run(id);
+        res.json({ success: true });
+      } else {
+        res.status(404).json({ error: "Jadwal postingan tidak ditemukan" });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
 
@@ -1526,7 +1962,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         body: JSON.stringify({ license_key: licenseRec.license_key, hardware_id: hwId })
       });
       
-      const data = await fetchResponse.json();
+      const data = (await fetchResponse.json()) as any;
       if (data.success) {
         return res.json({ valid: true, hardware_id: hwId, license_key: licenseRec.license_key });
       } else {
@@ -1556,7 +1992,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         body: JSON.stringify({ license_key, hardware_id: hwId })
       });
 
-      const data = await fetchResponse.json();
+      const data = (await fetchResponse.json()) as any;
       if (data.success) {
         // Save to DB
         db.prepare(`
@@ -1596,7 +2032,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
   // === ENDPOINT: Settings (API Keys) ===
   app.get("/api/settings", authMiddleware, (req: any, res) => {
     try {
-      const settings = db.prepare('SELECT gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id FROM settings WHERE user_id = ?').get(req.user.id) || {};
+      const settings = db.prepare('SELECT gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id, ig_business_account_id, tiktok_access_token, satisfying_video_path FROM settings WHERE user_id = ?').get(req.user.id) || {};
       res.json(settings);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1605,10 +2041,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/settings", authMiddleware, express.json(), (req: any, res) => {
     try {
-      const { gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id } = req.body;
+      const { gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id, ig_business_account_id, tiktok_access_token, satisfying_video_path } = req.body;
       db.prepare(`
-        INSERT INTO settings (user_id, gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO settings (user_id, gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id, ig_business_account_id, tiktok_access_token, satisfying_video_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
         gemini_key = excluded.gemini_key,
         openai_key = excluded.openai_key,
@@ -1616,8 +2052,23 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         youtube_client_id = excluded.youtube_client_id,
         youtube_client_secret = excluded.youtube_client_secret,
         fb_page_access_token = excluded.fb_page_access_token,
-        fb_page_id = excluded.fb_page_id
-      `).run(req.user.id, gemini_key || '', openai_key || '', groq_key || '', youtube_client_id || '', youtube_client_secret || '', fb_page_access_token || '', fb_page_id || '');
+        fb_page_id = excluded.fb_page_id,
+        ig_business_account_id = excluded.ig_business_account_id,
+        tiktok_access_token = excluded.tiktok_access_token,
+        satisfying_video_path = excluded.satisfying_video_path
+      `).run(
+        req.user.id,
+        gemini_key || '',
+        openai_key || '',
+        groq_key || '',
+        youtube_client_id || '',
+        youtube_client_secret || '',
+        fb_page_access_token || '',
+        fb_page_id || '',
+        ig_business_account_id || '',
+        tiktok_access_token || '',
+        satisfying_video_path || ''
+      );
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

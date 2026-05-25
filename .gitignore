@@ -26,3 +26,7 @@ dist-ssr
 release/
 dist-server/
 package_old.json
+
+# Databases
+*.sqlite
+*.db
