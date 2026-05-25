@@ -108,6 +108,82 @@ function saveToHistory(userId: number, entry: any) {
   }
 }
 
+// Helper to fetch and parse transcripts from video metadata (with rate limit check and language key priority)
+async function fetchTranscript(info: any, includeTimestamps = false): Promise<string> {
+  const sources = [info.subtitles, info.automatic_captions];
+  
+  const languageGroups = [
+    (key: string) => key.startsWith('id'),
+    (key: string) => key.startsWith('en'),
+    () => true
+  ];
+
+  for (const source of sources) {
+    if (!source) continue;
+    
+    for (const filterFn of languageGroups) {
+      const matchingKeys = Object.keys(source).filter(filterFn);
+      
+      for (const key of matchingKeys) {
+        const track = source[key]?.find((s: any) => s.ext === 'vtt' || s.ext === 'srt');
+        if (!track || !track.url) continue;
+
+        try {
+          const subRes = await fetch(track.url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+          });
+          
+          if (subRes.ok && subRes.status === 200) {
+            const raw = await subRes.text();
+            
+            if (raw.includes('<title>Sorry...</title>') || raw.trim().startsWith('<html')) {
+              console.warn(`[Transcript] Rate limited on track key ${key}`);
+              continue;
+            }
+
+            const lines = raw.split('\n');
+            let transcriptLines: string[] = [];
+            
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].trim();
+              if (line.includes('-->')) {
+                const time = line.split(' ')[0].substring(0, 8); // e.g. "00:00:05"
+                let textLines: string[] = [];
+                let j = i + 1;
+                while (j < lines.length && !lines[j].includes('-->') && !/^\d+$/.test(lines[j].trim())) {
+                  const txt = lines[j].replace(/<[^>]+>/g, '').trim();
+                  if (txt) textLines.push(txt);
+                  j++;
+                }
+                const text = textLines.join(' ');
+                if (text) {
+                  if (includeTimestamps) {
+                    transcriptLines.push(`[${time}] ${text}`);
+                  } else {
+                    transcriptLines.push(text);
+                  }
+                }
+                i = j - 1; // Advance loop
+              }
+            }
+
+            const transcript = includeTimestamps ? transcriptLines.join('\n') : transcriptLines.join(' ');
+            if (transcript.trim().length > 10) {
+              return transcript;
+            }
+          }
+        } catch (fetchErr: any) {
+          console.warn(`[Transcript] Failed to fetch track key ${key}: ${fetchErr.message}`);
+        }
+      }
+    }
+  }
+
+  return '';
+}
+
 // Helper for Subtitles
 function shiftSubtitles(content: string, offsetSeconds: number) {
   return content.replace(/(\d{2}):(\d{2}):(\d{2})([.,])(\d{3})/g, (match, h, m, s, sep, ms) => {
@@ -885,23 +961,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                   extractorArgs: 'youtube:player_client=android'
                 } as any) as any;
 
-                let transcript = '';
-                const langs = ['id', 'en'];
-                for (const source of [info.subtitles, info.automatic_captions]) {
-                  if (!source) continue;
-                  for (const lang of langs) {
-                    if (source[lang]) {
-                      const track = source[lang].find((s: any) => s.ext === 'vtt' || s.ext === 'srt');
-                      if (track) {
-                        const subRes = await fetch(track.url);
-                        const raw = await subRes.text();
-                        transcript = raw.replace(/<[^>]+>/g, '').replace(/^\d+\n/gm, '');
-                        break;
-                      }
-                    }
-                  }
-                  if (transcript) break;
-                }
+                const transcript = await fetchTranscript(info);
 
                 if (!transcript) {
                   addWatcherLog(`No transcript for ${videoTitle}, skipping.`);
@@ -1087,35 +1147,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     try {
       const { url } = req.query;
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      let subUrl = null;
-      const langs = ['id', 'en'];
-      for (const source of [info.subtitles, info.automatic_captions]) {
-        if (!source) continue;
-        for (const lang of langs) {
-          if (source[lang]) {
-            const track = source[lang].find((s: any) => s.ext === 'vtt' || s.ext === 'srt');
-            if (track) { subUrl = track.url; break; }
-          }
-        }
-        if (subUrl) break;
-      }
-
-      if (!subUrl) return res.json({ transcript: "" });
-
-      const subRes = await fetch(subUrl);
-      const text = await subRes.text();
-
-      const lines = text.split('\n');
-      let transcript = '';
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes('-->')) {
-          const time = lines[i].split(' ')[0].substring(0, 8); // 00:00:00
-          if (lines[i + 1] && lines[i + 1].trim() !== '') {
-            const cleanText = lines[i + 1].replace(/<[^>]+>/g, '').trim();
-            if (cleanText) transcript += `[${time}] ${cleanText}\n`;
-          }
-        }
-      }
+      const transcript = await fetchTranscript(info, true);
       res.json({ transcript });
     } catch (err: any) {
       console.error("Transcript Error:", err.message);
