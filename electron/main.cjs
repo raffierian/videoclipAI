@@ -121,8 +121,27 @@ autoUpdater.on('update-downloaded', (info) => {
 
 app.on('ready', () => {
   createWindow();
-  // Check for updates
-  autoUpdater.checkForUpdatesAndNotify();
+
+  // Configure auto-updater
+  autoUpdater.autoDownload = true;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.allowDowngrade = false;
+
+  // Attach logger so electron-updater writes to our log file
+  autoUpdater.logger = {
+    info: (msg) => logUpdater(`[INFO] ${msg}`),
+    warn: (msg) => logUpdater(`[WARN] ${msg}`),
+    error: (msg) => logUpdater(`[ERROR] ${msg}`),
+    debug: (msg) => logUpdater(`[DEBUG] ${msg}`),
+  };
+
+  // Check for updates after a small delay to let the window load first
+  setTimeout(() => {
+    logUpdater(`Memulai pengecekan pembaruan... (versi saat ini: ${app.getVersion()})`);
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      logUpdater(`checkForUpdatesAndNotify error: ${err.message || err}`);
+    });
+  }, 3000);
 });
 
 app.on('window-all-closed', function () {
