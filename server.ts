@@ -256,11 +256,22 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
     await Promise.race([downloadPromise, timeoutPromise]);
   } catch (err: any) {
     console.error(`[Transcript Fallback] Failed to download audio: ${err.message}`);
+    addWatcherLog(`⚠️ Gagal download audio untuk transkripsi: ${err.message}`);
     return '';
   }
 
   if (!fs.existsSync(tempAudioPath)) {
     console.error(`[Transcript Fallback] Audio file not found at ${tempAudioPath}`);
+    addWatcherLog(`⚠️ File audio tidak ditemukan setelah download`);
+    return '';
+  }
+
+  // Check minimum file size — < 1KB likely means the download failed silently
+  const audioStats = fs.statSync(tempAudioPath);
+  if (audioStats.size < 1024) {
+    console.error(`[Transcript Fallback] Audio file too small (${audioStats.size} bytes), likely corrupt or empty.`);
+    addWatcherLog(`⚠️ File audio terlalu kecil (${audioStats.size} bytes), kemungkinan gagal download`);
+    try { fs.unlinkSync(tempAudioPath); } catch {}
     return '';
   }
 
@@ -305,7 +316,23 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
         if (text.length > 10) return text;
       } catch (err: any) {
         console.warn(`[Transcript Fallback] Gemini failed: ${err.message}`);
-        if (err?.message?.includes('429') || err?.message?.includes('quota') || err?.message?.includes('leaked') || err?.message?.includes('PERMISSION_DENIED')) exhaustedAIKeys.add(key);
+        addWatcherLog(`⚠️ Gemini transcription error: ${err.message?.substring(0, 80)}`);
+        // Mark key as exhausted for any quota/auth/rate-limit related errors
+        const errMsg = (err?.message || '').toLowerCase();
+        if (
+          errMsg.includes('429') ||
+          errMsg.includes('quota') ||
+          errMsg.includes('resource_exhausted') ||
+          errMsg.includes('rate limit') ||
+          errMsg.includes('too many requests') ||
+          errMsg.includes('leaked') ||
+          errMsg.includes('permission_denied') ||
+          errMsg.includes('api_key_invalid') ||
+          errMsg.includes('invalid api key') ||
+          err?.status === 429 || err?.status === 403 || err?.status === 401
+        ) {
+          exhaustedAIKeys.add(key);
+        }
       }
     }
 
@@ -327,7 +354,17 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
         }
       } catch (err: any) {
         console.warn(`[Transcript Fallback] Groq Whisper failed: ${err.message}`);
-        if (err?.status === 429 || err?.message?.includes('quota') || err?.status === 401) exhaustedAIKeys.add(key);
+        addWatcherLog(`⚠️ Groq Whisper error: ${err.message?.substring(0, 80)}`);
+        const errMsg = (err?.message || '').toLowerCase();
+        if (
+          errMsg.includes('429') ||
+          errMsg.includes('quota') ||
+          errMsg.includes('rate limit') ||
+          errMsg.includes('too many requests') ||
+          err?.status === 429 || err?.status === 401 || err?.status === 403
+        ) {
+          exhaustedAIKeys.add(key);
+        }
       }
     }
 
@@ -349,19 +386,35 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
         }
       } catch (err: any) {
         console.warn(`[Transcript Fallback] OpenAI Whisper failed: ${err.message}`);
-        if (err?.status === 429 || err?.status === 401 || err?.message?.includes('quota')) exhaustedAIKeys.add(key);
+        addWatcherLog(`⚠️ OpenAI Whisper error: ${err.message?.substring(0, 80)}`);
+        const errMsg = (err?.message || '').toLowerCase();
+        if (
+          errMsg.includes('429') ||
+          errMsg.includes('quota') ||
+          errMsg.includes('rate limit') ||
+          errMsg.includes('too many requests') ||
+          err?.status === 429 || err?.status === 401 || err?.status === 403
+        ) {
+          exhaustedAIKeys.add(key);
+        }
       }
     }
 
     // If it reaches here, no valid transcription was generated.
-    // Let's check if all available keys are now in exhaustedAIKeys.
+    // Check if all available keys are exhausted (quota/auth issues).
     const allAvailableKeys = [...geminiKeys, ...groqKeys, ...openAIKeys];
-    const allExhausted = allAvailableKeys.every(k => exhaustedAIKeys.has(k));
+    const allExhausted = allAvailableKeys.length > 0 && allAvailableKeys.every(k => exhaustedAIKeys.has(k));
     
-    if (allExhausted && allAvailableKeys.length > 0) {
+    if (allExhausted) {
        console.log(`[Transcript Fallback] Semua kuota AI habis.`);
        pauseWatcher('Semua kuota AI (Gemini + Groq + OpenAI) habis saat mencoba mentranskrip audio. Silakan ganti API key di Pengaturan.', 'ai_quota');
        throw new Error('Semua kuota AI habis');
+    }
+
+    // Even if not all "exhausted", log that transcription failed so it's visible
+    if (allAvailableKeys.length > 0) {
+      console.log(`[Transcript Fallback] Semua AI gagal melakukan transkripsi audio (bukan quota).`);
+      addWatcherLog(`⚠️ Semua AI gagal transkripsi audio. Cek log error di atas untuk detail.`);
     }
 
   } finally {
