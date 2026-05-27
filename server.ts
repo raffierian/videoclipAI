@@ -272,38 +272,48 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
       }
     }
 
-    // 3. Try Gemini 2.0/2.5 Flash File API (Highly likely to have key)
+    // 3. Try Gemini 2.5 Flash inline base64 audio
+    // Note: @google/genai v1.x removed files.upload; we use inlineData instead
     if (geminiKey) {
       try {
         console.log(`[Transcript Fallback] Transcribing audio with Gemini...`);
         const aiClient = new GoogleGenAI({ apiKey: geminiKey });
-        const uploadResult = await aiClient.files.upload({
-          file: tempAudioPath,
-          config: { mimeType: 'audio/mp4' }
-        } as any);
+
+        // Read audio file as base64
+        const audioBuffer = fs.readFileSync(tempAudioPath);
+        const audioBase64 = audioBuffer.toString('base64');
+
+        // Determine mime type from file extension
+        const ext = path.extname(tempAudioPath).toLowerCase().replace('.', '');
+        const mimeTypeMap: Record<string, string> = {
+          'm4a': 'audio/mp4',
+          'mp4': 'audio/mp4',
+          'mp3': 'audio/mpeg',
+          'ogg': 'audio/ogg',
+          'opus': 'audio/opus',
+          'wav': 'audio/wav',
+          'flac': 'audio/flac',
+          'aac': 'audio/aac',
+          'webm': 'audio/webm',
+        };
+        const mimeType = mimeTypeMap[ext] || 'audio/mp4';
 
         const response = await aiClient.models.generateContent({
           model: 'gemini-2.5-flash',
-          contents: [
-            uploadResult,
-            "Transkripsikan audio video ini dengan format timestamp per detik/kalimat. Contoh: [00:00:05] Halo semuanya. [00:00:12] Hari ini kita akan... Berikan output HANYA teks transkripsi saja tanpa tambahan kata pembuka/penutup."
-          ]
+          contents: [{
+            parts: [
+              { inlineData: { mimeType, data: audioBase64 } },
+              { text: "Transkripsikan audio video ini dengan format timestamp per detik/kalimat. Contoh: [00:00:05] Halo semuanya. [00:00:12] Hari ini kita akan... Berikan output HANYA teks transkripsi saja tanpa tambahan kata pembuka/penutup." }
+            ]
+          }]
         });
-
-        try {
-          if (uploadResult.name) {
-            await aiClient.files.delete({ name: uploadResult.name as string });
-          }
-        } catch (e) {
-          console.warn(`[Transcript Fallback] Gemini file delete failed:`, e);
-        }
 
         const text = response.text || '';
         if (text.length > 10) {
           return text;
         }
       } catch (err: any) {
-        console.warn(`[Transcript Fallback] Gemini Audio transcription failed: ${err.message}`);
+        console.warn(`[Transcript Fallback] Gemini Audio transcription failed:\n${err.stack}`);
       }
     }
   } finally {
