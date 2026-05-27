@@ -411,10 +411,13 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
        throw new Error('Semua kuota AI habis');
     }
 
-    // Even if not all "exhausted", log that transcription failed so it's visible
+    // If we reach here with keys available but all failed (e.g. 503 server overload, network),
+    // throw a transient error so the watcher does NOT mark the video as processed.
+    // It will be retried on the next watcher run.
     if (allAvailableKeys.length > 0) {
-      console.log(`[Transcript Fallback] Semua AI gagal melakukan transkripsi audio (bukan quota).`);
-      addWatcherLog(`⚠️ Semua AI gagal transkripsi audio. Cek log error di atas untuk detail.`);
+      console.log(`[Transcript Fallback] Semua AI gagal sementara (mungkin 503/network). Akan dicoba ulang di run berikutnya.`);
+      addWatcherLog(`⏭️ Semua AI gagal sementara (503/network). Video akan dicoba ulang di run berikutnya.`);
+      throw new Error('AI_TRANSIENT_FAILURE');
     }
 
   } finally {
@@ -1580,11 +1583,24 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                 let transcript = await fetchTranscript(info);
                 if (!transcript) {
                   addWatcherLog(`No YouTube transcript for ${videoTitle}. Trying fallback audio transcription...`);
-                  transcript = await transcribeVideoAudio(sourceUrl, user.id);
+                  try {
+                    transcript = await transcribeVideoAudio(sourceUrl, user.id);
+                  } catch (transcriptErr: any) {
+                    if (transcriptErr?.message === 'AI_TRANSIENT_FAILURE') {
+                      // Transient error (503, network) — skip this run but DO NOT mark as processed
+                      addWatcherLog(`⏭️ ${videoTitle}: AI gagal sementara, akan dicoba ulang di run berikutnya.`);
+                      if (parentHistoryId) {
+                        db.prepare("UPDATE history SET status = 'pending', details = ? WHERE id = ?").run(JSON.stringify({ error: "AI transient failure (503/network), will retry" }), parentHistoryId);
+                      }
+                      continue; // skip without marking as processed
+                    }
+                    throw transcriptErr; // re-throw other errors (quota exhausted etc.)
+                  }
                 }
 
                 if (!transcript) {
-                  addWatcherLog(`No transcript for ${videoTitle}, skipping.`);
+                  // No transcript possible at all (no captions, no AI keys configured)
+                  addWatcherLog(`No transcript for ${videoTitle}, skipping permanently.`);
                   if (parentHistoryId) {
                     db.prepare("UPDATE history SET status = 'error', details = ? WHERE id = ?").run(JSON.stringify({ error: "No transcript available" }), parentHistoryId);
                   }
