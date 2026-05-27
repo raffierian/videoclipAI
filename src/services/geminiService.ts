@@ -44,7 +44,7 @@ export async function generateViralClips(
       'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({
-      url,
+      videoUrl: url,
       videoTitle: videoInfo?.title || url,
       transcript: transcript || '',
       count,

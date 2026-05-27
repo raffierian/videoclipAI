@@ -1,7 +1,7 @@
 {
   "name": "viralclip-ai-desktop",
   "private": true,
-  "version": "1.0.20",
+  "version": "1.0.21",
   "type": "module",
   "scripts": {
     "dev": "vite",
