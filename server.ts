@@ -940,6 +940,8 @@ async function startServer() {
     pauseType: '' as '' | 'ai_quota' | 'youtube_quota'
   };
 
+  const exhaustedAIKeys = new Set<string>();
+
   const pauseWatcher = (reason: string, type: 'ai_quota' | 'youtube_quota') => {
     watcherStatus.paused = true;
     watcherStatus.pauseReason = reason;
@@ -1092,7 +1094,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         const ollamaClient = new OpenAI({
           apiKey: 'ollama',
           baseURL: `${ollamaBaseUrl}/v1`,
-          timeout: 120000, // 120s timeout for slower local models
+          timeout: 120000,
         });
         const response = await ollamaClient.chat.completions.create({
           model: ollamaModel,
@@ -1107,40 +1109,16 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       }
     }
 
-    // 1. Try GROQ (Llama 3.3) if keys exist (Fastest, very generous free tier)
-    for (let keyIdx = 0; keyIdx < groqKeys.length; keyIdx++) {
-      const groq = new Groq({ apiKey: groqKeys[keyIdx] });
-      const model = 'llama-3.3-70b-versatile';
-
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-          const response = await groq.chat.completions.create({
-            model: model,
-            messages: [{ role: 'user', content: enhancedPrompt }],
-            response_format: { type: 'json_object' }
-          });
-          const clips = parseClips(response.choices[0]?.message?.content || '[]');
-          console.log(`[AI] Success with Groq ${model} (Key #${keyIdx + 1}) on attempt ${attempt + 1}`);
-          return clips.sort((a: any, b: any) => (b.viralScore || 0) - (a.viralScore || 0));
-        } catch (err: any) {
-          const isRateLimit = err?.status === 429;
-          if (isRateLimit && attempt < maxRetries - 1) {
-            const waitSec = Math.pow(2, attempt + 1) * 3;
-            console.log(`[AI] Rate limited on Groq ${model} (Key #${keyIdx + 1}), retrying in ${waitSec}s...`);
-            await new Promise(r => setTimeout(r, waitSec * 1000));
-          } else {
-            console.log(`[AI] Groq Model ${model} returned error/limit on Key #${keyIdx + 1}: ${err.message}. Moving on.`);
-            break;
-          }
-        }
-      }
-    }
-
-    // 2. Fallback to GEMINI
+    // 1. Try GEMINI first
     for (let keyIdx = 0; keyIdx < geminiKeys.length; keyIdx++) {
-      const aiClient = new GoogleGenAI({ apiKey: geminiKeys[keyIdx] });
+      const apiKey = geminiKeys[keyIdx];
+      if (exhaustedAIKeys.has(apiKey)) continue;
+
+      const aiClient = new GoogleGenAI({ apiKey });
+      let keyExhausted = false;
 
       for (const model of geminiModels) {
+        if (keyExhausted) break;
         for (let attempt = 0; attempt < maxRetries; attempt++) {
           try {
             const response = await aiClient.models.generateContent({
@@ -1180,8 +1158,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
               const waitSec = Math.pow(2, attempt + 1) * 3;
               console.log(`[AI] Rate limited on Gemini ${model} (Key #${keyIdx + 1}), retrying in ${waitSec}s...`);
               await new Promise(r => setTimeout(r, waitSec * 1000));
-            } else if (isRateLimit) {
+            } else if (isRateLimit || err?.message?.includes('quota')) {
               console.log(`[AI] Gemini ${model} rate limits exhausted on Key #${keyIdx + 1}.`);
+              exhaustedAIKeys.add(apiKey);
+              keyExhausted = true;
               break;
             } else {
               console.log(`[AI] Gemini ${model} returned error: ${err.message}.`);
@@ -1192,9 +1172,45 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       }
     }
 
+    // 2. Try GROQ (Llama 3.3)
+    for (let keyIdx = 0; keyIdx < groqKeys.length; keyIdx++) {
+      const apiKey = groqKeys[keyIdx];
+      if (exhaustedAIKeys.has(apiKey)) continue;
+
+      const groq = new Groq({ apiKey });
+      const model = 'llama-3.3-70b-versatile';
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const response = await groq.chat.completions.create({
+            model: model,
+            messages: [{ role: 'user', content: enhancedPrompt }],
+            response_format: { type: 'json_object' }
+          });
+          const clips = parseClips(response.choices[0]?.message?.content || '[]');
+          console.log(`[AI] Success with Groq ${model} (Key #${keyIdx + 1}) on attempt ${attempt + 1}`);
+          return clips.sort((a: any, b: any) => (b.viralScore || 0) - (a.viralScore || 0));
+        } catch (err: any) {
+          const isRateLimit = err?.status === 429;
+          if (isRateLimit && attempt < maxRetries - 1) {
+            const waitSec = Math.pow(2, attempt + 1) * 3;
+            console.log(`[AI] Rate limited on Groq ${model} (Key #${keyIdx + 1}), retrying in ${waitSec}s...`);
+            await new Promise(r => setTimeout(r, waitSec * 1000));
+          } else {
+            console.log(`[AI] Groq Model ${model} returned error/limit on Key #${keyIdx + 1}: ${err.message}. Moving on.`);
+            if (isRateLimit || err?.message?.includes('quota')) exhaustedAIKeys.add(apiKey);
+            break;
+          }
+        }
+      }
+    }
+
     // 3. Fallback to OpenAI (ChatGPT)
     for (let keyIdx = 0; keyIdx < openAIKeys.length; keyIdx++) {
-      const openai = new OpenAI({ apiKey: openAIKeys[keyIdx] });
+      const apiKey = openAIKeys[keyIdx];
+      if (exhaustedAIKeys.has(apiKey)) continue;
+
+      const openai = new OpenAI({ apiKey });
       const model = 'gpt-4o-mini';
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -1215,15 +1231,16 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
             await new Promise(r => setTimeout(r, waitSec * 1000));
           } else {
             console.log(`[AI] OpenAI Model ${model} returned error/limit on Key #${keyIdx + 1}: ${err.message}. Moving on.`);
+            if (isRateLimit || err?.message?.includes('quota')) exhaustedAIKeys.add(apiKey);
             break;
           }
         }
       }
     }
 
-    const exhaustMsg = `Semua kuota AI habis! Telah mencoba ${groqKeys.length} Groq, ${openAIKeys.length} OpenAI, dan ${geminiKeys.length} Gemini API Key. Silakan tambah saldo, ganti API key di Pengaturan, atau tunggu reset kuota.`;
+    const exhaustMsg = `Semua kuota AI habis! Telah mencoba ${geminiKeys.length} Gemini, ${groqKeys.length} Groq, dan ${openAIKeys.length} OpenAI API Key. Silakan tambah saldo, ganti API key di Pengaturan, atau tunggu reset kuota.`;
     // Pause watcher automatically so it doesn't keep burning retries
-    pauseWatcher('Semua kuota AI (Groq + OpenAI + Gemini) habis. Ganti atau isi ulang API key di Pengaturan.', 'ai_quota');
+    pauseWatcher('Semua kuota AI (Gemini + Groq + OpenAI) habis. Ganti atau isi ulang API key di Pengaturan.', 'ai_quota');
     throw new Error(exhaustMsg);
   }
 
@@ -1416,6 +1433,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     try {
       const users = db.prepare('SELECT * FROM users').all() as any[];
       for (const user of users) {
+        if (watcherStatus.paused) return;
         const channels = db.prepare('SELECT channel_id FROM channels WHERE user_id = ?').all(user.id) as any[];
         if (channels.length === 0) continue;
 
@@ -1427,6 +1445,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         const youtube = google.youtube({ version: 'v3', auth: userOauth });
 
         for (const chan of channels) {
+          if (watcherStatus.paused) return;
           const channelId = chan.channel_id;
           try {
             addWatcherLog(`Checking channel ${channelId} for user ${user.email}...`);
@@ -1472,6 +1491,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
 
             for (const video of newVideos.slice(0, 3)) { // max 3 per watcher run
+              if (watcherStatus.paused) return;
 
               const videoId = video.contentDetails?.videoId as string;
               const videoTitle = video.snippet?.title || 'Untitled';
@@ -1569,6 +1589,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                 if (parentHistoryId) {
                   db.prepare("UPDATE history SET status = 'error', details = ? WHERE id = ?").run(JSON.stringify({ error: videoErr.message }), parentHistoryId);
                 }
+                if (watcherStatus.paused) return;
               }
             }
           } catch (chanErr: any) {
@@ -1578,6 +1599,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
               const reason = 'Kuota YouTube API OAuth habis. Tunggu reset harian, atau hubungkan ulang akun YouTube lain di tombol Connect YT.';
               pauseWatcher(reason, 'youtube_quota');
               addWatcherLog(`⏸️ Watcher dijeda: ${reason}`);
+              return;
             } else {
               addWatcherLog(`Error on channel ${channelId}: ${errMsg}`);
             }
@@ -2385,6 +2407,14 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
   app.post("/api/settings", authMiddleware, express.json(), (req: any, res) => {
     try {
       const { gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id, ig_business_account_id, tiktok_access_token, satisfying_video_path } = req.body;
+      
+      // Clear exhausted keys if user is updating their settings
+      exhaustedAIKeys.clear();
+      if (watcherStatus.paused && watcherStatus.pauseType === 'ai_quota') {
+         watcherStatus.paused = false;
+         watcherStatus.pauseReason = '';
+      }
+
       db.prepare(`
         INSERT INTO settings (user_id, gemini_key, openai_key, groq_key, youtube_client_id, youtube_client_secret, fb_page_access_token, fb_page_id, ig_business_account_id, tiktok_access_token, satisfying_video_path)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
