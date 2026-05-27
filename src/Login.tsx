@@ -31,7 +31,15 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
-      const data = await res.json();
+      
+      let data;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error('Server tidak merespons dengan benar. Silakan restart aplikasi Anda.');
+      }
+      
       if (!res.ok) throw new Error(data.error || 'Terjadi kesalahan');
 
       if (isLogin) {
@@ -59,7 +67,15 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, newPassword })
       });
-      const data = await res.json();
+      
+      let data;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error('Server tidak merespons dengan benar. Silakan restart aplikasi Anda.');
+      }
+      
       if (!res.ok) throw new Error(data.error || 'Gagal reset password');
       setSuccessMsg(data.message);
       setTimeout(() => { setMode('auth'); setIsLogin(true); setNewPassword(''); setSuccessMsg(null); }, 2500);
