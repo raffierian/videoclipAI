@@ -205,7 +205,7 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
   
   try {
     console.log(`[Transcript Fallback] Downloading audio for fallback transcription: ${sourceUrl}`);
-    await youtubedl(sourceUrl, {
+    const downloadPromise = youtubedl(sourceUrl, {
       format: 'bestaudio[ext=m4a]/bestaudio/best',
       output: tempAudioPath,
       noWarnings: true,
@@ -213,6 +213,9 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
       extractorArgs: 'youtube:player_client=android',
       ffmpegLocation: resolvedFfmpegPath
     } as any);
+    
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Download timeout setelah 60 detik')), 60000));
+    await Promise.race([downloadPromise, timeoutPromise]);
   } catch (err: any) {
     console.error(`[Transcript Fallback] Failed to download audio: ${err.message}`);
     return '';
@@ -227,17 +230,54 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
   if (userId) {
     try { userSettings = db.prepare('SELECT * FROM settings WHERE user_id = ?').get(userId) as any || userSettings; } catch (e) { }
   }
-  const geminiKey = userSettings.gemini_key || process.env.GEMINI_API_KEY || '';
-  const groqKey = userSettings.groq_key || process.env.GROQ_API_KEY || '';
-  const openAIKey = userSettings.openai_key || process.env.OPENAI_API_KEY || '';
+  
+  const geminiKeys = [userSettings.gemini_key, process.env.GEMINI_API_KEY].join(',').split(',').map(k => k.trim()).filter(Boolean);
+  const groqKeys = [userSettings.groq_key, process.env.GROQ_API_KEY].join(',').split(',').map(k => k.trim()).filter(Boolean);
+  const openAIKeys = [userSettings.openai_key, process.env.OPENAI_API_KEY].join(',').split(',').map(k => k.trim()).filter(Boolean);
+
+  if (geminiKeys.length === 0 && groqKeys.length === 0 && openAIKeys.length === 0) {
+    console.log(`[Transcript Fallback] No AI keys available for transcription.`);
+    if (fs.existsSync(tempAudioPath)) try { fs.unlinkSync(tempAudioPath); } catch {}
+    return '';
+  }
 
   try {
-    // 1. Try Groq Whisper (Free & extremely fast)
-    if (groqKey) {
+    const audioBuffer = fs.readFileSync(tempAudioPath);
+    const audioBase64 = audioBuffer.toString('base64');
+    const ext = path.extname(tempAudioPath).toLowerCase().replace('.', '');
+    const mimeTypeMap: Record<string, string> = { 'm4a': 'audio/mp4', 'mp4': 'audio/mp4', 'mp3': 'audio/mpeg', 'wav': 'audio/wav' };
+    const mimeType = mimeTypeMap[ext] || 'audio/mp4';
+
+    // 1. Try Gemini
+    for (const key of geminiKeys) {
+      if (exhaustedAIKeys.has(key)) continue;
+      try {
+        console.log(`[Transcript Fallback] Transcribing audio with Gemini...`);
+        const aiClient = new GoogleGenAI({ apiKey: key });
+        const response = await aiClient.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [{
+            parts: [
+              { inlineData: { mimeType, data: audioBase64 } },
+              { text: "Transkripsikan audio video ini dengan format timestamp per detik/kalimat. Contoh: [00:00:05] Halo semuanya. [00:00:12] Hari ini kita akan... Berikan output HANYA teks transkripsi saja tanpa tambahan kata pembuka/penutup." }
+            ]
+          }]
+        });
+        const text = response.text || '';
+        if (text.length > 10) return text;
+      } catch (err: any) {
+        console.warn(`[Transcript Fallback] Gemini failed: ${err.message}`);
+        if (err?.message?.includes('429') || err?.message?.includes('quota') || err?.message?.includes('leaked') || err?.message?.includes('PERMISSION_DENIED')) exhaustedAIKeys.add(key);
+      }
+    }
+
+    // 2. Try Groq Whisper
+    for (const key of groqKeys) {
+      if (exhaustedAIKeys.has(key)) continue;
       try {
         console.log(`[Transcript Fallback] Transcribing audio with Groq Whisper...`);
         const { default: Groq } = await import('groq-sdk');
-        const groq = new Groq({ apiKey: groqKey });
+        const groq = new Groq({ apiKey: key });
         const transcription = await groq.audio.transcriptions.create({
           file: fs.createReadStream(tempAudioPath),
           model: "whisper-large-v3",
@@ -249,15 +289,17 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
         }
       } catch (err: any) {
         console.warn(`[Transcript Fallback] Groq Whisper failed: ${err.message}`);
+        if (err?.status === 429 || err?.message?.includes('quota') || err?.status === 401) exhaustedAIKeys.add(key);
       }
     }
 
-    // 2. Try OpenAI Whisper (Paid but accurate)
-    if (openAIKey) {
+    // 3. Try OpenAI Whisper
+    for (const key of openAIKeys) {
+      if (exhaustedAIKeys.has(key)) continue;
       try {
         console.log(`[Transcript Fallback] Transcribing audio with OpenAI Whisper...`);
         const { default: OpenAI } = await import('openai');
-        const openai = new OpenAI({ apiKey: openAIKey });
+        const openai = new OpenAI({ apiKey: key });
         const transcription = await openai.audio.transcriptions.create({
           file: fs.createReadStream(tempAudioPath),
           model: "whisper-1",
@@ -269,53 +311,21 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
         }
       } catch (err: any) {
         console.warn(`[Transcript Fallback] OpenAI Whisper failed: ${err.message}`);
+        if (err?.status === 429 || err?.status === 401 || err?.message?.includes('quota')) exhaustedAIKeys.add(key);
       }
     }
 
-    // 3. Try Gemini 2.5 Flash inline base64 audio
-    // Note: @google/genai v1.x removed files.upload; we use inlineData instead
-    if (geminiKey) {
-      try {
-        console.log(`[Transcript Fallback] Transcribing audio with Gemini...`);
-        const aiClient = new GoogleGenAI({ apiKey: geminiKey });
-
-        // Read audio file as base64
-        const audioBuffer = fs.readFileSync(tempAudioPath);
-        const audioBase64 = audioBuffer.toString('base64');
-
-        // Determine mime type from file extension
-        const ext = path.extname(tempAudioPath).toLowerCase().replace('.', '');
-        const mimeTypeMap: Record<string, string> = {
-          'm4a': 'audio/mp4',
-          'mp4': 'audio/mp4',
-          'mp3': 'audio/mpeg',
-          'ogg': 'audio/ogg',
-          'opus': 'audio/opus',
-          'wav': 'audio/wav',
-          'flac': 'audio/flac',
-          'aac': 'audio/aac',
-          'webm': 'audio/webm',
-        };
-        const mimeType = mimeTypeMap[ext] || 'audio/mp4';
-
-        const response = await aiClient.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: [{
-            parts: [
-              { inlineData: { mimeType, data: audioBase64 } },
-              { text: "Transkripsikan audio video ini dengan format timestamp per detik/kalimat. Contoh: [00:00:05] Halo semuanya. [00:00:12] Hari ini kita akan... Berikan output HANYA teks transkripsi saja tanpa tambahan kata pembuka/penutup." }
-            ]
-          }]
-        });
-
-        const text = response.text || '';
-        if (text.length > 10) {
-          return text;
-        }
-      } catch (err: any) {
-        console.warn(`[Transcript Fallback] Gemini Audio transcription failed:\n${err.stack}`);
-      }
+    // If it reaches here, no valid transcription was generated.
+    // Let's check if all available keys are now in exhaustedAIKeys.
+    const allAvailableKeys = [...geminiKeys, ...groqKeys, ...openAIKeys];
+    const allExhausted = allAvailableKeys.every(k => exhaustedAIKeys.has(k));
+    
+    if (allExhausted && allAvailableKeys.length > 0) {
+       console.log(`[Transcript Fallback] Semua kuota AI habis.`);
+       pauseWatcher('Semua kuota AI (Gemini + Groq + OpenAI) habis saat mencoba mentranskrip audio. Silakan ganti API key di Pengaturan.', 'ai_quota');
+       throw new Error('Semua kuota AI habis');
     }
+
   } finally {
     if (fs.existsSync(tempAudioPath)) {
       try { fs.unlinkSync(tempAudioPath); } catch {}
