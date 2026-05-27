@@ -279,7 +279,7 @@ async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<
         const aiClient = new GoogleGenAI({ apiKey: geminiKey });
         const uploadResult = await aiClient.files.upload({
           file: tempAudioPath,
-          mimeType: 'audio/mp4'
+          config: { mimeType: 'audio/mp4' }
         } as any);
 
         const response = await aiClient.models.generateContent({
