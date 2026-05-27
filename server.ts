@@ -934,7 +934,26 @@ async function startServer() {
     isChecking: false,
     lastChecked: null as string | null,
     lastAction: "Idle",
-    logs: [] as string[]
+    logs: [] as string[],
+    paused: false,
+    pauseReason: '' as string,
+    pauseType: '' as '' | 'ai_quota' | 'youtube_quota'
+  };
+
+  const pauseWatcher = (reason: string, type: 'ai_quota' | 'youtube_quota') => {
+    watcherStatus.paused = true;
+    watcherStatus.pauseReason = reason;
+    watcherStatus.pauseType = type;
+    watcherStatus.lastAction = `⏸️ PAUSED: ${reason}`;
+    console.warn(`[Watcher] PAUSED — ${type}: ${reason}`);
+  };
+
+  const resumeWatcher = () => {
+    watcherStatus.paused = false;
+    watcherStatus.pauseReason = '';
+    watcherStatus.pauseType = '';
+    watcherStatus.lastAction = 'Resumed by user';
+    console.log('[Watcher] Resumed by user.');
   };
 
   const addWatcherLog = (msg: string) => {
@@ -1202,7 +1221,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       }
     }
 
-    throw new Error(`Semua kuota habis! Telah mencoba ${groqKeys.length} Groq, ${openAIKeys.length} OpenAI, dan ${geminiKeys.length} Gemini API Key. Silakan tambah saldo atau tunggu reset.`);
+    const exhaustMsg = `Semua kuota AI habis! Telah mencoba ${groqKeys.length} Groq, ${openAIKeys.length} OpenAI, dan ${geminiKeys.length} Gemini API Key. Silakan tambah saldo, ganti API key di Pengaturan, atau tunggu reset kuota.`;
+    // Pause watcher automatically so it doesn't keep burning retries
+    pauseWatcher('Semua kuota AI (Groq + OpenAI + Gemini) habis. Ganti atau isi ulang API key di Pengaturan.', 'ai_quota');
+    throw new Error(exhaustMsg);
   }
 
   // === UPLOAD A SINGLE CLIP TO YOUTUBE SHORTS ===
@@ -1383,6 +1405,11 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   const runWatcher = async () => {
     if (watcherStatus.isChecking) return;
+    // Skip if watcher is paused due to quota/auth issues
+    if (watcherStatus.paused) {
+      console.log(`[Watcher] Skipping run — paused (${watcherStatus.pauseType}): ${watcherStatus.pauseReason}`);
+      return;
+    }
     watcherStatus.isChecking = true;
     watcherStatus.lastChecked = new Date().toISOString();
 
@@ -1545,7 +1572,15 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
               }
             }
           } catch (chanErr: any) {
-            addWatcherLog(`Error on channel ${channelId}: ${chanErr.message}`);
+            const errMsg = chanErr.message || '';
+            const isYoutubeQuota = errMsg.includes('quota') || errMsg.includes('quotaExceeded') || chanErr?.code === 403;
+            if (isYoutubeQuota) {
+              const reason = 'Kuota YouTube API OAuth habis. Tunggu reset harian, atau hubungkan ulang akun YouTube lain di tombol Connect YT.';
+              pauseWatcher(reason, 'youtube_quota');
+              addWatcherLog(`⏸️ Watcher dijeda: ${reason}`);
+            } else {
+              addWatcherLog(`Error on channel ${channelId}: ${errMsg}`);
+            }
           }
         }
       }
@@ -1635,8 +1670,15 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/v2/watcher/run", authMiddleware, (req: any, res) => {
     if (watcherStatus.isChecking) return res.status(400).json({ error: "Watcher is already running" });
+    if (watcherStatus.paused) return res.status(400).json({ error: "Watcher is paused. Use /resume to unpause first." });
     runWatcher();
     res.json({ success: true });
+  });
+
+  app.post("/api/v2/watcher/resume", authMiddleware, (req: any, res) => {
+    resumeWatcher();
+    runWatcher();
+    res.json({ success: true, message: "Watcher resumed and started a new check." });
   });
 
 

@@ -424,8 +424,16 @@ export default function App() {
     try {
       const res = await authedFetch('/api/v2/watcher/run', { method: 'POST' });
       if (res?.ok) { showToast('Watcher dipicu!', 'success'); fetchStatus(); }
-      else showToast('Watcher sudah berjalan atau error.', 'error');
+      else showToast('Watcher sudah berjalan atau sedang dijeda.', 'error');
     } catch { showToast('Gagal memicu watcher.', 'error'); }
+  };
+
+  const handleResumeWatcher = async () => {
+    try {
+      const res = await authedFetch('/api/v2/watcher/resume', { method: 'POST' });
+      if (res?.ok) { showToast('Watcher dilanjutkan!', 'success'); fetchStatus(); }
+      else showToast('Gagal melanjutkan watcher.', 'error');
+    } catch { showToast('Gagal melanjutkan watcher.', 'error'); }
   };
 
   const handleCancelSchedule = async (id: string) => {
@@ -600,9 +608,13 @@ export default function App() {
           <div className="flex items-center gap-2.5">
             {/* Watcher status */}
             <div className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold"
-              style={{ background: watcherStatus.isChecking ? 'rgba(245,158,11,0.1)' : 'rgba(16,185,129,0.1)', border: `1px solid ${watcherStatus.isChecking ? 'rgba(245,158,11,0.22)' : 'rgba(16,185,129,0.22)'}`, color: watcherStatus.isChecking ? '#fbbf24' : '#34d399' }}>
-              <span className={`pulse-dot ${watcherStatus.isChecking ? 'bg-amber-400 animate' : 'bg-emerald-400'}`} style={{ width: 7, height: 7 }} />
-              {watcherStatus.isChecking ? 'Running' : 'Watching'}
+              style={{
+                background: watcherStatus.paused ? 'rgba(239,68,68,0.1)' : watcherStatus.isChecking ? 'rgba(245,158,11,0.1)' : 'rgba(16,185,129,0.1)',
+                border: `1px solid ${watcherStatus.paused ? 'rgba(239,68,68,0.25)' : watcherStatus.isChecking ? 'rgba(245,158,11,0.22)' : 'rgba(16,185,129,0.22)'}`,
+                color: watcherStatus.paused ? '#f87171' : watcherStatus.isChecking ? '#fbbf24' : '#34d399'
+              }}>
+              <span className={`pulse-dot ${watcherStatus.paused ? 'bg-red-400' : watcherStatus.isChecking ? 'bg-amber-400 animate' : 'bg-emerald-400'}`} style={{ width: 7, height: 7 }} />
+              {watcherStatus.paused ? '⏸ Paused' : watcherStatus.isChecking ? 'Running' : 'Watching'}
             </div>
             {/* YouTube */}
             <button onClick={handleConnectYoutube} id="yt-connect-btn"
@@ -1117,12 +1129,46 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Pause Alert Banner */}
+                  {watcherStatus.paused && (
+                    <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)' }}>
+                      <div className="flex items-start gap-3">
+                        <span style={{ fontSize: 20 }}>⏸️</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-red-400 mb-1" style={{ fontSize: 13 }}>Watcher Dijeda Otomatis</p>
+                          <p className="text-slate-400" style={{ fontSize: 12, lineHeight: 1.5 }}>{watcherStatus.pauseReason}</p>
+                          <div className="flex flex-wrap gap-2 mt-3">
+                            {watcherStatus.pauseType === 'ai_quota' && (
+                              <button onClick={() => setIsSettingsOpen(true)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                                style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)', color: '#a5b4fc' }}>
+                                <Settings size={11} /> Buka Pengaturan API Key
+                              </button>
+                            )}
+                            {watcherStatus.pauseType === 'youtube_quota' && (
+                              <button onClick={handleConnectYoutube}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                                style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5' }}>
+                                <Youtube size={11} /> Ganti Akun YouTube
+                              </button>
+                            )}
+                            <button onClick={handleResumeWatcher}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                              style={{ background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.25)', color: '#34d399' }}>
+                              ▶ Lanjutkan Watcher
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Live activity */}
                   <div className="glass-card overflow-hidden flex flex-col">
                     <div className="card-header gap-2.5">
                       <Activity size={15} className="text-indigo-400" />
                       <p className="text-label text-slate-300 flex-1">Live Activity</p>
-                      <button onClick={handleRunWatcher} disabled={watcherStatus.isChecking}
+                      <button onClick={handleRunWatcher} disabled={watcherStatus.isChecking || watcherStatus.paused}
                         className="btn-secondary" style={{ fontSize: 12, padding: '6px 12px', borderRadius: 9 }}>
                         <PlaySquare size={12} /> Run Now
                       </button>
@@ -1130,8 +1176,8 @@ export default function App() {
                     <div className="flex-1 p-4 overflow-y-auto max-h-72 font-mono" style={{ fontSize: 11.5 }}>
                       <div className="flex items-center justify-between mb-3 pb-2.5" style={{ borderBottom: '1px solid rgba(99,102,241,0.08)' }}>
                         <span className="text-slate-600">Status:</span>
-                        <span className={`font-bold ${watcherStatus.isChecking ? 'text-amber-400' : 'text-emerald-400'}`}>
-                          {watcherStatus.isChecking ? '● RUNNING' : '○ WAITING'}
+                        <span className={`font-bold ${watcherStatus.paused ? 'text-red-400' : watcherStatus.isChecking ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {watcherStatus.paused ? '⏸ PAUSED' : watcherStatus.isChecking ? '● RUNNING' : '○ WAITING'}
                         </span>
                       </div>
                       <div className="space-y-2 text-slate-500">
