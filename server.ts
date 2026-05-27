@@ -1611,6 +1611,20 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     } catch (e: any) { res.status(401).json({ error: e.message }); }
   });
 
+  app.post("/api/auth/reset-password", express.json(), async (req, res) => {
+    try {
+      const { email, newPassword } = req.body;
+      if (!email || !newPassword) throw new Error('Email dan password baru wajib diisi');
+      if (newPassword.length < 6) throw new Error('Password minimal 6 karakter');
+      const user = db.prepare('SELECT id FROM users WHERE email = ?').get(email) as any;
+      if (!user) throw new Error('Email tidak terdaftar');
+      const { default: bcrypt } = await import('bcryptjs');
+      const hashed = await bcrypt.hash(newPassword, 10);
+      db.prepare('UPDATE users SET password = ? WHERE email = ?').run(hashed, email);
+      res.json({ success: true, message: 'Password berhasil direset. Silakan login dengan password baru.' });
+    } catch (e: any) { res.status(400).json({ error: e.message }); }
+  });
+
   app.get("/api/auth/status", authMiddleware, (req: any, res) => {
     const tokens = db.prepare('SELECT tokens FROM tokens WHERE user_id = ?').get(req.user.id) as any;
     res.json({ connected: !!tokens });

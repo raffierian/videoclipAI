@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mail, Lock, ArrowRight, Loader2, Sparkles, Zap, Eye, EyeOff, Shield } from 'lucide-react';
+import { Mail, Lock, ArrowRight, Loader2, Sparkles, Zap, Eye, EyeOff, Shield, KeyRound, ChevronLeft } from 'lucide-react';
 
 interface LoginProps {
   onLogin: (token: string, user: any) => void;
@@ -8,9 +8,12 @@ interface LoginProps {
 
 export const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [isLogin, setIsLogin]             = useState(true);
+  const [mode, setMode]                   = useState<'auth' | 'reset'>('auth');
   const [email, setEmail]                 = useState('');
   const [password, setPassword]           = useState('');
+  const [newPassword, setNewPassword]     = useState('');
   const [showPassword, setShowPassword]   = useState(false);
+  const [showNewPass, setShowNewPass]     = useState(false);
   const [loading, setLoading]             = useState(false);
   const [error, setError]                 = useState<string | null>(null);
   const [successMsg, setSuccessMsg]       = useState<string | null>(null);
@@ -38,6 +41,28 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
         setIsLogin(true);
         setPassword('');
       }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, newPassword })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Gagal reset password');
+      setSuccessMsg(data.message);
+      setTimeout(() => { setMode('auth'); setIsLogin(true); setNewPassword(''); setSuccessMsg(null); }, 2500);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -89,98 +114,192 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 ViralClip <span className="gradient-text">AI</span>
               </h1>
               <p className="text-slate-400 text-center leading-relaxed" style={{ fontSize: 14, maxWidth: 260 }}>
-                {isLogin
+                {mode === 'reset'
+                  ? 'Reset password akun Anda'
+                  : isLogin
                   ? 'Masuk ke dasbor otomatisasi konten viral Anda'
                   : 'Buat akun untuk mulai membuat konten viral dengan AI'}
               </p>
             </motion.div>
 
-            {/* Tab switcher */}
-            <div className="flex mb-6 p-1 rounded-xl" style={{ background: 'rgba(6,9,22,0.85)', border: '1px solid rgba(99,102,241,0.1)' }}>
-              {[{ label: 'Masuk', val: true }, { label: 'Daftar', val: false }].map(tab => (
-                <button key={tab.label}
-                  onClick={() => { setIsLogin(tab.val); setError(null); setSuccessMsg(null); }}
-                  className="flex-1 py-2.5 rounded-lg transition-all duration-200 font-semibold"
-                  style={{
-                    fontSize: 14,
-                    background: isLogin === tab.val ? 'linear-gradient(135deg,rgba(99,102,241,0.3),rgba(124,58,237,0.2))' : 'transparent',
-                    color: isLogin === tab.val ? '#c7d2fe' : '#475569',
-                    border: isLogin === tab.val ? '1px solid rgba(99,102,241,0.25)' : '1px solid transparent',
-                  }}>
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Email */}
-              <div>
-                <label className="text-label text-slate-500 block mb-2">Email</label>
-                <div className="relative">
-                  <Mail size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" style={{ opacity: 0.6 }} />
-                  <input type="email" required placeholder="nama@email.com" value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    className="input-modern" style={{ paddingLeft: 44, fontSize: 14.5 }}
-                    id="login-email" />
-                </div>
-              </div>
-
-              {/* Password */}
-              <div>
-                <label className="text-label text-slate-500 block mb-2">Password</label>
-                <div className="relative">
-                  <Lock size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" style={{ opacity: 0.6 }} />
-                  <input type={showPassword ? 'text' : 'password'} required placeholder="••••••••"
-                    value={password} onChange={e => setPassword(e.target.value)}
-                    className="input-modern" style={{ paddingLeft: 44, paddingRight: 48, fontSize: 14.5 }}
-                    id="login-password" />
-                  <button type="button" onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors"
-                    style={{ color: showPassword ? '#818cf8' : '#475569' }}>
-                    {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+            <AnimatePresence mode="wait">
+              {/* ── RESET PASSWORD FORM ── */}
+              {mode === 'reset' ? (
+                <motion.div key="reset"
+                  initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.22 }}>
+                  <button onClick={() => { setMode('auth'); setError(null); setSuccessMsg(null); }}
+                    className="flex items-center gap-1.5 mb-5 text-indigo-400 hover:text-indigo-300 transition-colors"
+                    style={{ fontSize: 13 }}>
+                    <ChevronLeft size={15} /> Kembali ke Login
                   </button>
-                </div>
-              </div>
 
-              {/* Messages */}
-              <AnimatePresence mode="wait">
-                {error && (
-                  <motion.div key="err" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-                    <div className="flex items-center gap-2.5 p-3.5 rounded-xl"
-                      style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
-                      <div className="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" />
-                      <p className="text-red-400 font-semibold" style={{ fontSize: 13.5 }}>{error}</p>
+                  <form onSubmit={handleResetPassword} className="space-y-4">
+                    {/* Email */}
+                    <div>
+                      <label className="text-label text-slate-500 block mb-2">Email Akun Anda</label>
+                      <div className="relative">
+                        <Mail size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" style={{ opacity: 0.6 }} />
+                        <input type="email" required placeholder="nama@email.com" value={email}
+                          onChange={e => setEmail(e.target.value)}
+                          className="input-modern" style={{ paddingLeft: 44, fontSize: 14.5 }} />
+                      </div>
                     </div>
-                  </motion.div>
-                )}
-                {successMsg && (
-                  <motion.div key="ok" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-                    <div className="flex items-center gap-2.5 p-3.5 rounded-xl"
-                      style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)' }}>
-                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
-                      <p className="text-emerald-400 font-semibold" style={{ fontSize: 13.5 }}>{successMsg}</p>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
 
-              {/* Submit */}
-              <button type="submit" disabled={loading} id="login-submit"
-                className="btn-primary w-full mt-2"
-                style={{ padding: '14px 20px', fontSize: 15, borderRadius: 13 }}>
-                {loading ? (
-                  <Loader2 size={17} className="animate-spin" />
-                ) : (
-                  <>
-                    <Sparkles size={16} />
-                    {isLogin ? 'Masuk ke Dashboard' : 'Buat Akun Gratis'}
-                    <ArrowRight size={16} />
-                  </>
-                )}
-              </button>
-            </form>
+                    {/* New Password */}
+                    <div>
+                      <label className="text-label text-slate-500 block mb-2">Password Baru</label>
+                      <div className="relative">
+                        <KeyRound size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" style={{ opacity: 0.6 }} />
+                        <input type={showNewPass ? 'text' : 'password'} required placeholder="Minimal 6 karakter"
+                          value={newPassword} onChange={e => setNewPassword(e.target.value)}
+                          className="input-modern" style={{ paddingLeft: 44, paddingRight: 48, fontSize: 14.5 }} />
+                        <button type="button" onClick={() => setShowNewPass(!showNewPass)}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors"
+                          style={{ color: showNewPass ? '#818cf8' : '#475569' }}>
+                          {showNewPass ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Messages */}
+                    <AnimatePresence mode="wait">
+                      {error && (
+                        <motion.div key="err" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                          <div className="flex items-center gap-2.5 p-3.5 rounded-xl"
+                            style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                            <div className="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" />
+                            <p className="text-red-400 font-semibold" style={{ fontSize: 13.5 }}>{error}</p>
+                          </div>
+                        </motion.div>
+                      )}
+                      {successMsg && (
+                        <motion.div key="ok" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                          <div className="flex items-center gap-2.5 p-3.5 rounded-xl"
+                            style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
+                            <p className="text-emerald-400 font-semibold" style={{ fontSize: 13.5 }}>{successMsg}</p>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    <button type="submit" disabled={loading} id="reset-submit"
+                      className="btn-primary w-full mt-2"
+                      style={{ padding: '14px 20px', fontSize: 15, borderRadius: 13 }}>
+                      {loading ? <Loader2 size={17} className="animate-spin" /> : (
+                        <><KeyRound size={16} /> Reset Password <ArrowRight size={16} /></>
+                      )}
+                    </button>
+                  </form>
+                </motion.div>
+
+              ) : (
+                /* ── LOGIN / REGISTER FORM ── */
+                <motion.div key="auth"
+                  initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.22 }}>
+
+                  {/* Tab switcher */}
+                  <div className="flex mb-6 p-1 rounded-xl" style={{ background: 'rgba(6,9,22,0.85)', border: '1px solid rgba(99,102,241,0.1)' }}>
+                    {[{ label: 'Masuk', val: true }, { label: 'Daftar', val: false }].map(tab => (
+                      <button key={tab.label}
+                        onClick={() => { setIsLogin(tab.val); setError(null); setSuccessMsg(null); }}
+                        className="flex-1 py-2.5 rounded-lg transition-all duration-200 font-semibold"
+                        style={{
+                          fontSize: 14,
+                          background: isLogin === tab.val ? 'linear-gradient(135deg,rgba(99,102,241,0.3),rgba(124,58,237,0.2))' : 'transparent',
+                          color: isLogin === tab.val ? '#c7d2fe' : '#475569',
+                          border: isLogin === tab.val ? '1px solid rgba(99,102,241,0.25)' : '1px solid transparent',
+                        }}>
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <form onSubmit={handleSubmit} className="space-y-4">
+                    {/* Email */}
+                    <div>
+                      <label className="text-label text-slate-500 block mb-2">Email</label>
+                      <div className="relative">
+                        <Mail size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" style={{ opacity: 0.6 }} />
+                        <input type="email" required placeholder="nama@email.com" value={email}
+                          onChange={e => setEmail(e.target.value)}
+                          className="input-modern" style={{ paddingLeft: 44, fontSize: 14.5 }}
+                          id="login-email" />
+                      </div>
+                    </div>
+
+                    {/* Password */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-label text-slate-500">Password</label>
+                        {isLogin && (
+                          <button type="button" onClick={() => { setMode('reset'); setError(null); setSuccessMsg(null); }}
+                            className="transition-colors hover:text-indigo-300"
+                            style={{ fontSize: 12, color: '#6366f1' }}>
+                            Lupa password?
+                          </button>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <Lock size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" style={{ opacity: 0.6 }} />
+                        <input type={showPassword ? 'text' : 'password'} required placeholder="••••••••"
+                          value={password} onChange={e => setPassword(e.target.value)}
+                          className="input-modern" style={{ paddingLeft: 44, paddingRight: 48, fontSize: 14.5 }}
+                          id="login-password" />
+                        <button type="button" onClick={() => setShowPassword(!showPassword)}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors"
+                          style={{ color: showPassword ? '#818cf8' : '#475569' }}>
+                          {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Messages */}
+                    <AnimatePresence mode="wait">
+                      {error && (
+                        <motion.div key="err" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                          <div className="flex items-center gap-2.5 p-3.5 rounded-xl"
+                            style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                            <div className="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" />
+                            <p className="text-red-400 font-semibold" style={{ fontSize: 13.5 }}>{error}</p>
+                          </div>
+                        </motion.div>
+                      )}
+                      {successMsg && (
+                        <motion.div key="ok" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                          <div className="flex items-center gap-2.5 p-3.5 rounded-xl"
+                            style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
+                            <p className="text-emerald-400 font-semibold" style={{ fontSize: 13.5 }}>{successMsg}</p>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* Submit */}
+                    <button type="submit" disabled={loading} id="login-submit"
+                      className="btn-primary w-full mt-2"
+                      style={{ padding: '14px 20px', fontSize: 15, borderRadius: 13 }}>
+                      {loading ? (
+                        <Loader2 size={17} className="animate-spin" />
+                      ) : (
+                        <>
+                          <Sparkles size={16} />
+                          {isLogin ? 'Masuk ke Dashboard' : 'Buat Akun Gratis'}
+                          <ArrowRight size={16} />
+                        </>
+                      )}
+                    </button>
+                  </form>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           {/* Footer */}
@@ -188,7 +307,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
             <div className="flex items-center justify-center gap-3">
               <div className="flex items-center gap-1.5 text-slate-600" style={{ fontSize: 12 }}>
                 <Shield size={11} className="text-indigo-600" />
-                <span>Data aman & terenkripsi</span>
+                <span>Data aman &amp; terenkripsi</span>
               </div>
               <div className="w-1 h-1 rounded-full bg-slate-700" />
               <p className="text-slate-600" style={{ fontSize: 12 }}>ViralClip AI © 2026</p>
