@@ -165,7 +165,10 @@ def main():
         "status":   "ok",
         "crop_w":   crop_w,
         "crop_h":   crop_h,
+        "width":    width,
+        "height":   height,
         "detected": len(keyframes),
+        "avg_cx":   float(np.mean(cx_all)) if len(cx_all) > 0 else float(width / 2.0),
         "out":      cmds_path
     }))
 

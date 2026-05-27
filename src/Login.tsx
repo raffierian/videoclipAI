@@ -1,155 +1,203 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mail, Lock, Zap, ArrowRight, Loader2, Sparkles } from 'lucide-react';
+import { Mail, Lock, ArrowRight, Loader2, Sparkles, Zap, Eye, EyeOff, Shield } from 'lucide-react';
 
 interface LoginProps {
-    onLogin: (token: string, user: any) => void;
+  onLogin: (token: string, user: any) => void;
 }
 
 export const Login: React.FC<LoginProps> = ({ onLogin }) => {
-    const [isLogin, setIsLogin] = useState(true);
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+  const [isLogin, setIsLogin]             = useState(true);
+  const [email, setEmail]                 = useState('');
+  const [password, setPassword]           = useState('');
+  const [showPassword, setShowPassword]   = useState(false);
+  const [loading, setLoading]             = useState(false);
+  const [error, setError]                 = useState<string | null>(null);
+  const [successMsg, setSuccessMsg]       = useState<string | null>(null);
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setLoading(true);
-        setError(null);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setSuccessMsg(null);
 
-        const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+    const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+    try {
+      const res  = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Terjadi kesalahan');
 
-        try {
-            const res = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password })
-            });
+      if (isLogin) {
+        onLogin(data.token, data.user);
+      } else {
+        setSuccessMsg('Akun berhasil dibuat! Silakan masuk.');
+        setIsLogin(true);
+        setPassword('');
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Terjadi kesalahan');
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-hidden"
+      style={{ background: 'radial-gradient(ellipse at 60% 30%, rgba(99,102,241,0.12) 0%, #080b14 60%)' }}>
 
-            if (isLogin) {
-                onLogin(data.token, data.user);
-            } else {
-                setIsLogin(true);
-                alert('Pendaftaran berhasil! Silakan masuk.');
-            }
-        } catch (err: any) {
-            setError(err.message);
-        } finally {
-            setLoading(false);
-        }
-    };
+      <div className="orb-1" />
+      <div className="orb-2" />
+      <div className="absolute inset-0 grid-bg" style={{ opacity: 0.35 }} />
 
-    return (
-        <div className="fixed inset-0 z-[100] bg-slate-950 flex items-center justify-center p-4 overflow-hidden">
-            {/* Dynamic Background */}
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(59,130,246,0.1),transparent_50%)] pointer-events-none" />
-            <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full pointer-events-none" />
-            <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full pointer-events-none" />
+      <motion.div
+        initial={{ opacity: 0, y: 24, scale: 0.96 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
+        className="relative z-10 w-full max-w-md"
+      >
+        <div className="relative rounded-2xl overflow-hidden"
+          style={{
+            background: 'rgba(9, 13, 28, 0.96)',
+            border: '1px solid rgba(99,102,241,0.2)',
+            boxShadow: '0 40px 90px rgba(0,0,0,0.55), 0 0 80px rgba(99,102,241,0.08), inset 0 1px 0 rgba(255,255,255,0.05)'
+          }}>
 
-            <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                className="w-full max-w-md relative"
-            >
-                <div className="bg-white/5 border border-white/10 rounded-[2.5rem] p-8 md:p-12 backdrop-blur-3xl shadow-2xl relative overflow-hidden">
-                    {/* Decorative Elements */}
-                    <div className="absolute top-0 right-0 p-4 opacity-20">
-                        <Sparkles size={100} className="text-white" strokeWidth={0.5} />
-                    </div>
+          {/* Top glow */}
+          <div className="absolute top-0 inset-x-0 h-px"
+            style={{ background: 'linear-gradient(90deg, transparent, rgba(99,102,241,0.65), transparent)' }} />
 
-                    <div className="flex flex-col items-center mb-10 text-center relative z-10">
-                        <div className="w-16 h-16 bg-gradient-to-tr from-blue-600 to-purple-600 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-blue-600/20 mb-6">
-                            <Zap size={32} fill="white" />
-                        </div>
-                        <h1 className="text-4xl font-black text-white mb-3 tracking-tight">ViralClip AI</h1>
-                        <p className="text-slate-400 text-sm max-w-[240px]">
-                            {isLogin ? 'Masuk untuk mengelola otomatisasi konten Anda.' : 'Daftar sekarang untuk mulai membuat konten viral.'}
-                        </p>
-                    </div>
-
-                    <form onSubmit={handleSubmit} className="space-y-5 relative z-10">
-                        <div className="space-y-1">
-                            <div className="relative group">
-                                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500 group-focus-within:text-blue-500 transition-colors">
-                                    <Mail size={18} />
-                                </div>
-                                <input
-                                    type="email"
-                                    required
-                                    placeholder="Email Address"
-                                    value={email}
-                                    onChange={(e) => setEmail(e.target.value)}
-                                    className="w-full bg-slate-900/50 border border-white/10 rounded-2xl pl-12 pr-4 py-4 text-white placeholder-slate-500 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all"
-                                />
-                            </div>
-                        </div>
-
-                        <div className="space-y-1">
-                            <div className="relative group">
-                                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500 group-focus-within:text-blue-500 transition-colors">
-                                    <Lock size={18} />
-                                </div>
-                                <input
-                                    type="password"
-                                    required
-                                    placeholder="Password"
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    className="w-full bg-slate-900/50 border border-white/10 rounded-2xl pl-12 pr-4 py-4 text-white placeholder-slate-500 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all"
-                                />
-                            </div>
-                        </div>
-
-                        <AnimatePresence mode="wait">
-                            {error && (
-                                <motion.p
-                                    initial={{ opacity: 0, height: 0 }}
-                                    animate={{ opacity: 1, height: 'auto' }}
-                                    exit={{ opacity: 0, height: 0 }}
-                                    className="text-red-400 text-xs font-bold text-center bg-red-400/10 py-2 rounded-lg border border-red-400/20"
-                                >
-                                    {error}
-                                </motion.p>
-                            )}
-                        </AnimatePresence>
-
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 shadow-xl shadow-blue-600/20 transition-all active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100"
-                        >
-                            {loading ? <Loader2 className="animate-spin" size={20} /> : (
-                                <>
-                                    {isLogin ? 'Masuk Sekarang' : 'Daftar Akun'}
-                                    <ArrowRight size={20} />
-                                </>
-                            )}
-                        </button>
-                    </form>
-
-                    <div className="mt-8 text-center relative z-10">
-                        <button
-                            type="button"
-                            onClick={() => setIsLogin(!isLogin)}
-                            className="text-slate-400 hover:text-white text-sm transition-colors font-medium"
-                        >
-                            {isLogin ? (
-                                <>Belum punya akun? <span className="text-blue-400 font-bold">Daftar di sini</span></>
-                            ) : (
-                                <>Sudah punya akun? <span className="text-blue-400 font-bold">Masuk di sini</span></>
-                            )}
-                        </button>
-                    </div>
+          <div style={{ padding: '36px 36px 28px' }}>
+            {/* Logo */}
+            <motion.div className="flex flex-col items-center mb-8"
+              initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+              <div className="relative mb-5">
+                <div className="w-16 h-16 rounded-2xl flex items-center justify-center logo-icon"
+                  style={{ background: 'linear-gradient(135deg,#6366f1,#7c3aed)', boxShadow: '0 10px 36px rgba(99,102,241,0.5), 0 0 0 1px rgba(99,102,241,0.3)' }}>
+                  <Zap size={28} fill="currentColor" className="text-white" />
                 </div>
-
-                <p className="mt-8 text-center text-slate-600 text-[10px] uppercase tracking-widest font-bold">
-                    Powered by ViralClip AI &bull; 2026
-                </p>
+                <div className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center"
+                  style={{ background: 'linear-gradient(135deg,#6366f1,#7c3aed)', border: '2px solid #080b14' }}>
+                  <Sparkles size={10} className="text-white" />
+                </div>
+              </div>
+              <h1 className="font-bold text-white mb-2"
+                style={{ fontSize: 26, fontFamily: "'Space Grotesk',sans-serif", letterSpacing: '-0.5px' }}>
+                ViralClip <span className="gradient-text">AI</span>
+              </h1>
+              <p className="text-slate-400 text-center leading-relaxed" style={{ fontSize: 14, maxWidth: 260 }}>
+                {isLogin
+                  ? 'Masuk ke dasbor otomatisasi konten viral Anda'
+                  : 'Buat akun untuk mulai membuat konten viral dengan AI'}
+              </p>
             </motion.div>
+
+            {/* Tab switcher */}
+            <div className="flex mb-6 p-1 rounded-xl" style={{ background: 'rgba(6,9,22,0.85)', border: '1px solid rgba(99,102,241,0.1)' }}>
+              {[{ label: 'Masuk', val: true }, { label: 'Daftar', val: false }].map(tab => (
+                <button key={tab.label}
+                  onClick={() => { setIsLogin(tab.val); setError(null); setSuccessMsg(null); }}
+                  className="flex-1 py-2.5 rounded-lg transition-all duration-200 font-semibold"
+                  style={{
+                    fontSize: 14,
+                    background: isLogin === tab.val ? 'linear-gradient(135deg,rgba(99,102,241,0.3),rgba(124,58,237,0.2))' : 'transparent',
+                    color: isLogin === tab.val ? '#c7d2fe' : '#475569',
+                    border: isLogin === tab.val ? '1px solid rgba(99,102,241,0.25)' : '1px solid transparent',
+                  }}>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {/* Email */}
+              <div>
+                <label className="text-label text-slate-500 block mb-2">Email</label>
+                <div className="relative">
+                  <Mail size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" style={{ opacity: 0.6 }} />
+                  <input type="email" required placeholder="nama@email.com" value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    className="input-modern" style={{ paddingLeft: 44, fontSize: 14.5 }}
+                    id="login-email" />
+                </div>
+              </div>
+
+              {/* Password */}
+              <div>
+                <label className="text-label text-slate-500 block mb-2">Password</label>
+                <div className="relative">
+                  <Lock size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" style={{ opacity: 0.6 }} />
+                  <input type={showPassword ? 'text' : 'password'} required placeholder="••••••••"
+                    value={password} onChange={e => setPassword(e.target.value)}
+                    className="input-modern" style={{ paddingLeft: 44, paddingRight: 48, fontSize: 14.5 }}
+                    id="login-password" />
+                  <button type="button" onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors"
+                    style={{ color: showPassword ? '#818cf8' : '#475569' }}>
+                    {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Messages */}
+              <AnimatePresence mode="wait">
+                {error && (
+                  <motion.div key="err" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                    <div className="flex items-center gap-2.5 p-3.5 rounded-xl"
+                      style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                      <div className="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" />
+                      <p className="text-red-400 font-semibold" style={{ fontSize: 13.5 }}>{error}</p>
+                    </div>
+                  </motion.div>
+                )}
+                {successMsg && (
+                  <motion.div key="ok" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                    <div className="flex items-center gap-2.5 p-3.5 rounded-xl"
+                      style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
+                      <p className="text-emerald-400 font-semibold" style={{ fontSize: 13.5 }}>{successMsg}</p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Submit */}
+              <button type="submit" disabled={loading} id="login-submit"
+                className="btn-primary w-full mt-2"
+                style={{ padding: '14px 20px', fontSize: 15, borderRadius: 13 }}>
+                {loading ? (
+                  <Loader2 size={17} className="animate-spin" />
+                ) : (
+                  <>
+                    <Sparkles size={16} />
+                    {isLogin ? 'Masuk ke Dashboard' : 'Buat Akun Gratis'}
+                    <ArrowRight size={16} />
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+
+          {/* Footer */}
+          <div style={{ padding: '16px 36px 20px', borderTop: '1px solid rgba(99,102,241,0.08)' }}>
+            <div className="flex items-center justify-center gap-3">
+              <div className="flex items-center gap-1.5 text-slate-600" style={{ fontSize: 12 }}>
+                <Shield size={11} className="text-indigo-600" />
+                <span>Data aman & terenkripsi</span>
+              </div>
+              <div className="w-1 h-1 rounded-full bg-slate-700" />
+              <p className="text-slate-600" style={{ fontSize: 12 }}>ViralClip AI © 2026</p>
+              <div className="w-1 h-1 rounded-full bg-slate-700" />
+              <p className="text-slate-600" style={{ fontSize: 12 }}>Powered by Gemini</p>
+            </div>
+          </div>
         </div>
-    );
+      </motion.div>
+    </div>
+  );
 };

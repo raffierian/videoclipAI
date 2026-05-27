@@ -61,10 +61,28 @@ function msToAssTime(ms: number): string {
   return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
 }
 
-export function convertSrtToTikTokAss(rawSRT: string, offsetSeconds: number): string {
+export function convertSrtToTikTokAss(
+  rawSRT: string, 
+  offsetSeconds: number,
+  options?: { fontName?: string; fontSize?: number; highlightColor?: string }
+): string {
   const lines = rawSRT.split('\n');
   let events = '';
   let i = 0;
+
+  const bgrColors: Record<string, string> = {
+    yellow: '00FFFF',
+    green: '00FF00',
+    cyan: 'FFFF00',
+    orange: '00A5FF',
+    pink: 'FF00FF',
+    red: '0000FF',
+    white: 'FFFFFF',
+  };
+
+  const hlColorBGR = (options?.highlightColor && bgrColors[options.highlightColor.toLowerCase()]) || '00FFFF';
+  const fontName = options?.fontName || 'Impact';
+  const fontSize = options?.fontSize || 48;
 
   while (i < lines.length) {
     const line = lines[i].trim();
@@ -116,10 +134,10 @@ export function convertSrtToTikTokAss(rawSRT: string, offsetSeconds: number): st
         const assStart = msToAssTime(wordStartMs);
         const assEnd = msToAssTime(wordEndMs);
 
-        // Build text where the current word is colored yellow (\c&H00FFFF&), others are white (\c&HFFFFFF&)
+        // Build text where the current word is colored dynamically, others are white (\c&HFFFFFF&)
         const assText = processedWords.map((word, idx) => {
           if (idx === w) {
-            return `{\\c&H00FFFF&}${word}{\\c&HFFFFFF&}`;
+            return `{\\c&H${hlColorBGR}&}${word}{\\c&HFFFFFF&}`;
           }
           return word;
         }).join(' ');
@@ -140,7 +158,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: TikTok,Impact,48,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,5,10,10,320,1
+Style: TikTok,${fontName},${fontSize},&H00FFFFFF,&H00${hlColorBGR}&,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,5,10,10,320,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -149,7 +167,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   return header + events;
 }
 
-export async function prepareAssSubtitles(info: any, offsetSeconds: number): Promise<{ rawPath: string; ffmpegPath: string } | null> {
+export async function prepareAssSubtitles(
+  info: any, 
+  offsetSeconds: number,
+  options?: { fontName?: string; fontSize?: number; highlightColor?: string }
+): Promise<{ rawPath: string; ffmpegPath: string } | null> {
   let subUrl = null;
   const langs = ['id', 'en'];
 
@@ -172,7 +194,7 @@ export async function prepareAssSubtitles(info: any, offsetSeconds: number): Pro
   try {
     const subRes = await fetch(subUrl);
     const subText = await subRes.text();
-    const assContent = convertSrtToTikTokAss(subText, offsetSeconds);
+    const assContent = convertSrtToTikTokAss(subText, offsetSeconds, options);
 
     const rawPath = path.join(os.tmpdir(), `temp_sub_${Date.now()}_${Math.floor(Math.random() * 1000)}.ass`);
     fs.writeFileSync(rawPath, assContent);

@@ -70,6 +70,20 @@ const youtubedl = function(url: string, flags: any = {}) {
   });
 };
 
+async function downloadYoutubeSegment(url: string, sectionStr: string, outputPath: string) {
+  await youtubedl(url, {
+    format: 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
+    mergeOutputFormat: 'mp4',
+    downloadSections: sectionStr,
+    forceKeyframesAtCuts: true,
+    output: outputPath,
+    noWarnings: true,
+    noCheckCertificates: true,
+    extractorArgs: 'youtube:player_client=android',
+    ffmpegLocation: resolvedFfmpegPath
+  } as any);
+}
+
 function getOAuthClient(userId: number) {
   const settings = db.prepare('SELECT youtube_client_id, youtube_client_secret FROM settings WHERE user_id = ?').get(userId) as any;
   if (!settings || !settings.youtube_client_id || !settings.youtube_client_secret) {
@@ -185,6 +199,132 @@ async function fetchTranscript(info: any, includeTimestamps = false): Promise<st
   return '';
 }
 
+// Fallback to transcribe audio of YouTube video if no transcript is found on YouTube
+async function transcribeVideoAudio(sourceUrl: string, userId: number): Promise<string> {
+  const tempAudioPath = path.join(os.tmpdir(), `temp_audio_${Date.now()}_${Math.floor(Math.random() * 1000)}.m4a`);
+  
+  try {
+    console.log(`[Transcript Fallback] Downloading audio for fallback transcription: ${sourceUrl}`);
+    await youtubedl(sourceUrl, {
+      format: 'bestaudio[ext=m4a]/bestaudio/best',
+      output: tempAudioPath,
+      noWarnings: true,
+      noCheckCertificates: true,
+      extractorArgs: 'youtube:player_client=android',
+      ffmpegLocation: resolvedFfmpegPath
+    } as any);
+  } catch (err: any) {
+    console.error(`[Transcript Fallback] Failed to download audio: ${err.message}`);
+    return '';
+  }
+
+  if (!fs.existsSync(tempAudioPath)) {
+    console.error(`[Transcript Fallback] Audio file not found at ${tempAudioPath}`);
+    return '';
+  }
+
+  let userSettings = { gemini_key: '', openai_key: '', groq_key: '' };
+  if (userId) {
+    try { userSettings = db.prepare('SELECT * FROM settings WHERE user_id = ?').get(userId) as any || userSettings; } catch (e) { }
+  }
+  const geminiKey = userSettings.gemini_key || process.env.GEMINI_API_KEY || '';
+  const groqKey = userSettings.groq_key || process.env.GROQ_API_KEY || '';
+  const openAIKey = userSettings.openai_key || process.env.OPENAI_API_KEY || '';
+
+  try {
+    // 1. Try Groq Whisper (Free & extremely fast)
+    if (groqKey) {
+      try {
+        console.log(`[Transcript Fallback] Transcribing audio with Groq Whisper...`);
+        const { default: Groq } = await import('groq-sdk');
+        const groq = new Groq({ apiKey: groqKey });
+        const transcription = await groq.audio.transcriptions.create({
+          file: fs.createReadStream(tempAudioPath),
+          model: "whisper-large-v3",
+          response_format: "verbose_json",
+        }) as any;
+        if (transcription.segments && transcription.segments.length > 0) {
+          const formatted = formatWhisperSegments(transcription.segments);
+          if (formatted.length > 10) return formatted;
+        }
+      } catch (err: any) {
+        console.warn(`[Transcript Fallback] Groq Whisper failed: ${err.message}`);
+      }
+    }
+
+    // 2. Try OpenAI Whisper (Paid but accurate)
+    if (openAIKey) {
+      try {
+        console.log(`[Transcript Fallback] Transcribing audio with OpenAI Whisper...`);
+        const { default: OpenAI } = await import('openai');
+        const openai = new OpenAI({ apiKey: openAIKey });
+        const transcription = await openai.audio.transcriptions.create({
+          file: fs.createReadStream(tempAudioPath),
+          model: "whisper-1",
+          response_format: "verbose_json",
+        }) as any;
+        if (transcription.segments && transcription.segments.length > 0) {
+          const formatted = formatWhisperSegments(transcription.segments);
+          if (formatted.length > 10) return formatted;
+        }
+      } catch (err: any) {
+        console.warn(`[Transcript Fallback] OpenAI Whisper failed: ${err.message}`);
+      }
+    }
+
+    // 3. Try Gemini 2.0/2.5 Flash File API (Highly likely to have key)
+    if (geminiKey) {
+      try {
+        console.log(`[Transcript Fallback] Transcribing audio with Gemini...`);
+        const aiClient = new GoogleGenAI({ apiKey: geminiKey });
+        const uploadResult = await aiClient.files.upload({
+          file: tempAudioPath,
+          mimeType: 'audio/mp4'
+        } as any);
+
+        const response = await aiClient.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [
+            uploadResult,
+            "Transkripsikan audio video ini dengan format timestamp per detik/kalimat. Contoh: [00:00:05] Halo semuanya. [00:00:12] Hari ini kita akan... Berikan output HANYA teks transkripsi saja tanpa tambahan kata pembuka/penutup."
+          ]
+        });
+
+        try {
+          if (uploadResult.name) {
+            await aiClient.files.delete({ name: uploadResult.name as string });
+          }
+        } catch (e) {
+          console.warn(`[Transcript Fallback] Gemini file delete failed:`, e);
+        }
+
+        const text = response.text || '';
+        if (text.length > 10) {
+          return text;
+        }
+      } catch (err: any) {
+        console.warn(`[Transcript Fallback] Gemini Audio transcription failed: ${err.message}`);
+      }
+    }
+  } finally {
+    if (fs.existsSync(tempAudioPath)) {
+      try { fs.unlinkSync(tempAudioPath); } catch {}
+    }
+  }
+
+  return '';
+}
+
+function formatWhisperSegments(segments: any[]): string {
+  return segments.map(seg => {
+    const totalSec = Math.floor(seg.start);
+    const h = Math.floor(totalSec / 3600).toString().padStart(2, '0');
+    const m = Math.floor((totalSec % 3600) / 60).toString().padStart(2, '0');
+    const s = (totalSec % 60).toString().padStart(2, '0');
+    return `[${h}:${m}:${s}] ${seg.text.trim()}`;
+  }).join('\n');
+}
+
 // Helper for Subtitles
 function shiftSubtitles(content: string, offsetSeconds: number) {
   return content.replace(/(\d{2}):(\d{2}):(\d{2})([.,])(\d{3})/g, (match, h, m, s, sep, ms) => {
@@ -294,14 +434,21 @@ function spawnPython(args: string[], timeoutMs = 120000): Promise<string | null>
 // Run new timeline-based face tracker:
 // Python detects face positions → writes an FFmpeg sendcmd file
 // FFmpeg then applies a smooth dynamic crop — audio is preserved!
-async function runFaceTimeline(inputPath: string): Promise<{ cmdsPath: string; crop_w: number; crop_h: number } | null> {
+async function runFaceTimeline(inputPath: string): Promise<{ cmdsPath: string; crop_w: number; crop_h: number; width: number; height: number; avg_cx: number } | null> {
   const cmdsPath = path.join(os.tmpdir(), `face_cmds_${Date.now()}.txt`);
   const raw = await spawnPython(['face_detect_timeline.py', inputPath, cmdsPath], 90000);
   if (!raw) return null;
   try {
     const result = JSON.parse(raw);
     if (result.status === 'ok' && fs.existsSync(cmdsPath) && result.detected > 0) {
-      return { cmdsPath, crop_w: result.crop_w, crop_h: result.crop_h };
+      return {
+        cmdsPath,
+        crop_w: result.crop_w,
+        crop_h: result.crop_h,
+        width: result.width,
+        height: result.height,
+        avg_cx: result.avg_cx
+      };
     }
   } catch { }
   if (fs.existsSync(cmdsPath)) try { fs.unlinkSync(cmdsPath); } catch { }
@@ -342,9 +489,12 @@ async function processClipVideo(
     startSec: number;
     info: any;
     userId: number;
+    subFontName?: string;
+    subFontSize?: number;
+    subHighlightColor?: string;
   }
 ): Promise<{ rawSubPath: string | null; cmdsPath: string | null }> {
-  const { format, videoMode, useSubtitles, captionStyle, startSec, info, userId } = options;
+  const { format, videoMode, useSubtitles, captionStyle, startSec, info, userId, subFontName, subFontSize, subHighlightColor } = options;
 
   const settings = db.prepare('SELECT satisfying_video_path FROM settings WHERE user_id = ?').get(userId) as any;
   const satisfyingPath = settings?.satisfying_video_path || '';
@@ -353,14 +503,18 @@ async function processClipVideo(
   let subInfo: any = null;
   if (useSubtitles) {
     if (captionStyle === 'tiktok') {
-      subInfo = await prepareAssSubtitles(info, startSec);
+      subInfo = await prepareAssSubtitles(info, startSec, {
+        fontName: subFontName,
+        fontSize: subFontSize ? Number(subFontSize) : undefined,
+        highlightColor: subHighlightColor
+      });
     } else {
       subInfo = await prepareSubtitles(info, startSec, 'normal');
     }
   }
 
-  let faceTimeline: { cmdsPath: string; crop_w: number; crop_h: number } | null = null;
-  if (format === 'portrait' && videoMode === 'reframe') {
+  let faceTimeline: { cmdsPath: string; crop_w: number; crop_h: number; width: number; height: number; avg_cx: number } | null = null;
+  if (format === 'portrait' && (videoMode === 'reframe' || videoMode === 'split')) {
     faceTimeline = await runFaceTimeline(inputPath);
   }
 
@@ -391,7 +545,29 @@ async function processClipVideo(
       if (hasSatisfying) {
         complex = `[0:v]crop=ih*9/16:ih,scale=1080:960[top];[1:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[bottom];[top][bottom]vstack=inputs=2[vid]`;
       } else {
-        complex = `[0:v]split[top][bottom];[top]crop=iw/2:ih:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[t];[bottom]crop=iw/2:ih:iw/2:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[b];[t][b]vstack=inputs=2[vid]`;
+        if (faceTimeline && faceTimeline.avg_cx !== undefined) {
+          const cmdsEsc = faceTimeline.cmdsPath.replace(/\\/g, '/').replace(':', '\\:');
+          const width = faceTimeline.width;
+          const avgCx = faceTimeline.avg_cx;
+
+          // If avgCx > width / 2 (face is on the right):
+          // - Top is left half (content)
+          // - Bottom is face tracked (right)
+          // If avgCx <= width / 2 (face is on the left):
+          // - Top is right half (content)
+          // - Bottom is face tracked (left)
+          const topCropX = avgCx > width / 2 ? 0 : Math.floor(width / 2);
+          
+          complex = `[0:v]split[top][bottom];` +
+                    `[top]crop=iw/2:ih:${topCropX}:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[t];` +
+                    `[bottom]sendcmd=f='${cmdsEsc}',crop=${faceTimeline.crop_w}:${faceTimeline.crop_h},scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[b];` +
+                    `[t][b]vstack=inputs=2[vid]`;
+        } else {
+          complex = `[0:v]split[top][bottom];` +
+                    `[top]crop=iw/2:ih:0:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[t];` +
+                    `[bottom]crop=iw/2:ih:iw/2:0,scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[b];` +
+                    `[t][b]vstack=inputs=2[vid]`;
+        }
       }
 
       if (subInfo) {
@@ -1034,16 +1210,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
     // 1. Download clip segment
     const tempSegPath = path.join(os.tmpdir(), `autopilot_seg_${Date.now()}.mp4`);
-    await youtubedl(sourceUrl, {
-      format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-      downloadSections: sectionStr,
-      forceKeyframesAtCuts: true,
-      output: tempSegPath,
-      noWarnings: true,
-      noCheckCertificates: true,
-      extractorArgs: 'youtube:player_client=android',
-      ffmpegLocation: resolvedFfmpegPath,
-    } as any);
+    await downloadYoutubeSegment(sourceUrl, sectionStr, tempSegPath);
 
     // 2. Re-encode portrait (9:16) with face tracking + TikTok subtitles
     const tempOutPath = path.join(os.tmpdir(), `autopilot_out_${Date.now()}.mp4`);
@@ -1142,16 +1309,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
     // 1. Download clip segment
     const tempSegPath = path.join(os.tmpdir(), `autopilot_fb_seg_${Date.now()}.mp4`);
-    await youtubedl(sourceUrl, {
-      format: 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-      downloadSections: sectionStr,
-      forceKeyframesAtCuts: true,
-      output: tempSegPath,
-      noWarnings: true,
-      noCheckCertificates: true,
-      extractorArgs: 'youtube:player_client=android',
-      ffmpegLocation: resolvedFfmpegPath,
-    } as any);
+    await downloadYoutubeSegment(sourceUrl, sectionStr, tempSegPath);
 
     // 2. Re-encode portrait (9:16) with face tracking (no subtitles for auto-pilot as requested before)
     const tempOutPath = path.join(os.tmpdir(), `autopilot_fb_out_${Date.now()}.mp4`);
@@ -1295,13 +1453,18 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                   extractorArgs: 'youtube:player_client=android'
                 } as any) as any;
 
-                const transcript = await fetchTranscript(info);
+                let transcript = await fetchTranscript(info);
+                if (!transcript) {
+                  addWatcherLog(`No YouTube transcript for ${videoTitle}. Trying fallback audio transcription...`);
+                  transcript = await transcribeVideoAudio(sourceUrl, user.id);
+                }
 
                 if (!transcript) {
                   addWatcherLog(`No transcript for ${videoTitle}, skipping.`);
                   if (parentHistoryId) {
                     db.prepare("UPDATE history SET status = 'error', details = ? WHERE id = ?").run(JSON.stringify({ error: "No transcript available" }), parentHistoryId);
                   }
+                  db.prepare('INSERT OR IGNORE INTO processed_videos (user_id, video_id) VALUES (?, ?)').run(user.id, videoId);
                   continue;
                 }
 
@@ -1313,6 +1476,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                   if (parentHistoryId) {
                     db.prepare("UPDATE history SET status = 'error', details = ? WHERE id = ?").run(JSON.stringify({ error: "No clips generated by AI" }), parentHistoryId);
                   }
+                  db.prepare('INSERT OR IGNORE INTO processed_videos (user_id, video_id) VALUES (?, ?)').run(user.id, videoId);
                   continue;
                 }
 
@@ -1477,11 +1641,14 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     }
   });
 
-  app.get("/api/transcript", authMiddleware, async (req, res) => {
+  app.get("/api/transcript", authMiddleware, async (req: any, res) => {
     try {
       const { url } = req.query;
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const transcript = await fetchTranscript(info, true);
+      let transcript = await fetchTranscript(info, true);
+      if (!transcript) {
+        transcript = await transcribeVideoAudio(url as string, req.user.id);
+      }
       res.json({ transcript });
     } catch (err: any) {
       console.error("Transcript Error:", err.message);
@@ -1491,7 +1658,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.get("/api/download-clip", authMiddleware, async (req: any, res) => {
     try {
-      const { url, start, end, format, quality, useSubtitles, captionStyle, videoMode } = req.query;
+      const { url, start, end, format, quality, useSubtitles, captionStyle, videoMode, subFontName, subFontSize, subHighlightColor } = req.query;
 
       const startSec = parseFloat(start as string);
       const endSec = parseFloat(end as string);
@@ -1504,19 +1671,9 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       res.setHeader("Content-Type", "video/mp4");
       res.setHeader("Content-Disposition", contentDisposition(`clip_${title}.mp4`));
 
-      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
       const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await youtubedl(url as string, {
-        format: ytdlFormat,
-        downloadSections: sectionStr,
-        forceKeyframesAtCuts: true,
-        output: tempVideoPath,
-        noWarnings: true,
-        noCheckCertificates: true,
-        extractorArgs: 'youtube:player_client=android',
-        ffmpegLocation: resolvedFfmpegPath
-      } as any);
+      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
 
       const tempOutPath = path.join(os.tmpdir(), `clip_out_${Date.now()}.mp4`);
       const cleanup = await processClipVideo(tempVideoPath, tempOutPath, {
@@ -1526,7 +1683,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         captionStyle: captionStyle as 'normal' | 'tiktok',
         startSec,
         info,
-        userId: req.user.id
+        userId: req.user.id,
+        subFontName: subFontName as string,
+        subFontSize: subFontSize ? Number(subFontSize) : undefined,
+        subHighlightColor: subHighlightColor as string
       });
 
       res.sendFile(tempOutPath, (err) => {
@@ -1551,7 +1711,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/upload/youtube", authMiddleware, express.json(), async (req: any, res) => {
     try {
-      const { url, start, end, format, title, description, tags, quality, useSubtitles, captionStyle, videoMode } = req.body;
+      const { url, start, end, format, title, description, tags, quality, useSubtitles, captionStyle, videoMode, subFontName, subFontSize, subHighlightColor } = req.body;
 
       const tokenRow = db.prepare('SELECT tokens FROM tokens WHERE user_id = ?').get(req.user.id) as any;
       if (!tokenRow) return res.status(401).json({ error: "YouTube not connected" });
@@ -1564,19 +1724,9 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
       const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await youtubedl(url as string, {
-        format: ytdlFormat,
-        downloadSections: sectionStr,
-        forceKeyframesAtCuts: true,
-        output: tempVideoPath,
-        noWarnings: true,
-        noCheckCertificates: true,
-        extractorArgs: 'youtube:player_client=android',
-        ffmpegLocation: resolvedFfmpegPath
-      } as any);
+      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
 
       const tempPath = path.join(os.tmpdir(), `temp_upload_${Date.now()}.mp4`);
       const cleanup = await processClipVideo(tempVideoPath, tempPath, {
@@ -1586,7 +1736,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         captionStyle: captionStyle as 'normal' | 'tiktok',
         startSec,
         info,
-        userId: req.user.id
+        userId: req.user.id,
+        subFontName,
+        subFontSize: subFontSize ? Number(subFontSize) : undefined,
+        subHighlightColor
       });
 
       try {
@@ -1637,7 +1790,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/upload/facebook", authMiddleware, express.json(), async (req: any, res) => {
     try {
-      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode } = req.body;
+      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode, subFontName, subFontSize, subHighlightColor } = req.body;
 
       const settings = db.prepare('SELECT fb_page_access_token, fb_page_id FROM settings WHERE user_id = ?').get(req.user.id) as any;
       if (!settings || !settings.fb_page_access_token || !settings.fb_page_id) {
@@ -1651,19 +1804,9 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
       const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await youtubedl(url as string, {
-        format: ytdlFormat,
-        downloadSections: sectionStr,
-        forceKeyframesAtCuts: true,
-        output: tempVideoPath,
-        noWarnings: true,
-        noCheckCertificates: true,
-        extractorArgs: 'youtube:player_client=android',
-        ffmpegLocation: resolvedFfmpegPath
-      } as any);
+      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
 
       const tempPath = path.join(os.tmpdir(), `temp_upload_fb_${Date.now()}.mp4`);
       const cleanup = await processClipVideo(tempVideoPath, tempPath, {
@@ -1673,7 +1816,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         captionStyle: captionStyle as 'normal' | 'tiktok',
         startSec,
         info,
-        userId: req.user.id
+        userId: req.user.id,
+        subFontName,
+        subFontSize: subFontSize ? Number(subFontSize) : undefined,
+        subHighlightColor
       });
 
       try {
@@ -1718,7 +1864,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/upload/instagram", authMiddleware, express.json(), async (req: any, res) => {
     try {
-      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode } = req.body;
+      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode, subFontName, subFontSize, subHighlightColor } = req.body;
       const settings = db.prepare('SELECT fb_page_access_token, ig_business_account_id FROM settings WHERE user_id = ?').get(req.user.id) as any;
       if (!settings || !settings.fb_page_access_token || !settings.ig_business_account_id) {
         return res.status(400).json({ error: "Instagram Business Account ID atau Meta Access Token belum diatur di Pengaturan." });
@@ -1731,19 +1877,9 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
       const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await youtubedl(url as string, {
-        format: ytdlFormat,
-        downloadSections: sectionStr,
-        forceKeyframesAtCuts: true,
-        output: tempVideoPath,
-        noWarnings: true,
-        noCheckCertificates: true,
-        extractorArgs: 'youtube:player_client=android',
-        ffmpegLocation: resolvedFfmpegPath
-      } as any);
+      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
 
       const tempPath = path.join(os.tmpdir(), `temp_upload_ig_${Date.now()}.mp4`);
       const cleanup = await processClipVideo(tempVideoPath, tempPath, {
@@ -1753,7 +1889,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         captionStyle: captionStyle as 'normal' | 'tiktok',
         startSec,
         info,
-        userId: req.user.id
+        userId: req.user.id,
+        subFontName,
+        subFontSize: subFontSize ? Number(subFontSize) : undefined,
+        subHighlightColor
       });
 
       try {
@@ -1781,7 +1920,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/upload/tiktok", authMiddleware, express.json(), async (req: any, res) => {
     try {
-      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode } = req.body;
+      const { url, start, end, format, title, description, quality, useSubtitles, captionStyle, videoMode, subFontName, subFontSize, subHighlightColor } = req.body;
       const settings = db.prepare('SELECT tiktok_access_token FROM settings WHERE user_id = ?').get(req.user.id) as any;
       if (!settings || !settings.tiktok_access_token) {
         return res.status(400).json({ error: "TikTok Access Token belum diatur di Pengaturan." });
@@ -1794,19 +1933,9 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
       const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await youtubedl(url as string, {
-        format: ytdlFormat,
-        downloadSections: sectionStr,
-        forceKeyframesAtCuts: true,
-        output: tempVideoPath,
-        noWarnings: true,
-        noCheckCertificates: true,
-        extractorArgs: 'youtube:player_client=android',
-        ffmpegLocation: resolvedFfmpegPath
-      } as any);
+      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
 
       const tempPath = path.join(os.tmpdir(), `temp_upload_tt_${Date.now()}.mp4`);
       const cleanup = await processClipVideo(tempVideoPath, tempPath, {
@@ -1816,7 +1945,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         captionStyle: captionStyle as 'normal' | 'tiktok',
         startSec,
         info,
-        userId: req.user.id
+        userId: req.user.id,
+        subFontName,
+        subFontSize: subFontSize ? Number(subFontSize) : undefined,
+        subHighlightColor
       });
 
       try {
@@ -1844,7 +1976,7 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
 
   app.post("/api/scheduler/add", authMiddleware, express.json(), async (req: any, res) => {
     try {
-      const { url, start, end, format, title, description, tags, quality, useSubtitles, captionStyle, videoMode, scheduledTime, platform } = req.body;
+      const { url, start, end, format, title, description, tags, quality, useSubtitles, captionStyle, videoMode, scheduledTime, platform, subFontName, subFontSize, subHighlightColor } = req.body;
       if (!scheduledTime || !platform) {
         return res.status(400).json({ error: "scheduledTime dan platform wajib diisi" });
       }
@@ -1887,7 +2019,10 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
         captionStyle: captionStyle as 'normal' | 'tiktok',
         startSec,
         info,
-        userId: req.user.id
+        userId: req.user.id,
+        subFontName,
+        subFontSize: subFontSize ? Number(subFontSize) : undefined,
+        subHighlightColor
       });
 
       if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
@@ -1945,6 +2080,148 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
   });
 
 
+
+  // ─────────────────────────────────────────────────────────
+  // === ENDPOINT: Analytics Stats ===
+  // ─────────────────────────────────────────────────────────
+  app.get("/api/stats", authMiddleware, (req: any, res) => {
+    try {
+      const history = db.prepare('SELECT * FROM history WHERE user_id = ? ORDER BY timestamp DESC').all(req.user.id) as any[];
+
+      const totalUploads     = history.filter(h => h.type?.includes('upload') || h.type?.includes('auto_process')).length;
+      const successUploads   = history.filter(h => h.status === 'success').length;
+      const failedUploads    = history.filter(h => h.status === 'error' || h.status === 'failed').length;
+      const successRate      = totalUploads > 0 ? Math.round((successUploads / totalUploads) * 100) : 0;
+
+      const platformBreakdown: Record<string, number> = { youtube: 0, facebook: 0, instagram: 0, tiktok: 0 };
+      history.forEach((h: any) => {
+        if (h.type?.includes('youtube') || h.type === 'upload') platformBreakdown.youtube++;
+        else if (h.type?.includes('facebook')) platformBreakdown.facebook++;
+        else if (h.type?.includes('instagram')) platformBreakdown.instagram++;
+        else if (h.type?.includes('tiktok')) platformBreakdown.tiktok++;
+      });
+
+      // Last 7 days activity breakdown
+      const now = Date.now();
+      const dayMs = 86400000;
+      const last7days = Array.from({ length: 7 }, (_, i) => {
+        const dayStart = now - (6 - i) * dayMs;
+        const dayEnd   = dayStart + dayMs;
+        const count    = history.filter(h => {
+          const t = new Date(h.timestamp).getTime();
+          return t >= dayStart && t < dayEnd;
+        }).length;
+        const label = new Date(dayStart).toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric' });
+        return { label, count, date: new Date(dayStart).toISOString().split('T')[0] };
+      });
+
+      const channels = db.prepare('SELECT COUNT(*) as count FROM channels WHERE user_id = ?').get(req.user.id) as any;
+      const pendingJobs = db.prepare("SELECT COUNT(*) as count FROM scheduler_queue WHERE user_id = ? AND status = 'pending'").get(req.user.id) as any;
+
+      res.json({
+        totalUploads,
+        successUploads,
+        failedUploads,
+        successRate,
+        platformBreakdown,
+        last7days,
+        channelsWatched: channels.count,
+        pendingJobs: pendingJobs.count,
+        recentActivity: history.slice(0, 10)
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────
+  // === ENDPOINT: Re-Analyze clips from URL ===
+  // ─────────────────────────────────────────────────────────
+  app.post("/api/clips/reanalyze", authMiddleware, express.json(), async (req: any, res) => {
+    try {
+      const { url, count = 4, focus } = req.body;
+      if (!url) return res.status(400).json({ error: "URL wajib diisi" });
+
+      const info = await youtubedl(url as string, {
+        dumpSingleJson: true, noCheckCertificates: true,
+        noWarnings: true, extractorArgs: 'youtube:player_client=android'
+      } as any) as any;
+
+      let transcript = await fetchTranscript(info, true);
+      if (!transcript) {
+        transcript = await transcribeVideoAudio(url as string, req.user.id);
+      }
+      if (!transcript) return res.status(422).json({ error: "Tidak dapat mengambil transkrip video" });
+
+      const focusNote = focus ? `\n\nFOKUS KHUSUS: ${focus}` : '';
+      const clips = await analyzeClipsServer(url, info.title || '', transcript + focusNote, count, req.user.id);
+
+      res.json({ clips, videoTitle: info.title, duration: info.duration });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────
+  // === ENDPOINT: Full Video Metadata ===
+  // ─────────────────────────────────────────────────────────
+  app.get("/api/video-metadata", authMiddleware, async (req: any, res) => {
+    try {
+      const { url } = req.query;
+      if (!url) return res.status(400).json({ error: "URL wajib diisi" });
+
+      const info = await youtubedl(url as string, {
+        dumpSingleJson: true, noCheckCertificates: true,
+        noWarnings: true, extractorArgs: 'youtube:player_client=android'
+      } as any) as any;
+
+      res.json({
+        title: info.title,
+        description: info.description,
+        uploader: info.uploader,
+        uploader_url: info.uploader_url,
+        duration: info.duration,
+        view_count: info.view_count,
+        like_count: info.like_count,
+        upload_date: info.upload_date,
+        thumbnail: info.thumbnail,
+        categories: info.categories,
+        tags: info.tags?.slice(0, 20),
+        language: info.language,
+        chapters: info.chapters,
+        automatic_captions_available: !!(info.automatic_captions && Object.keys(info.automatic_captions).length),
+        subtitles_available: !!(info.subtitles && Object.keys(info.subtitles).length),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────
+  // === ENDPOINT: Clear History ===
+  // ─────────────────────────────────────────────────────────
+  app.delete("/api/history", authMiddleware, (req: any, res) => {
+    try {
+      db.prepare('DELETE FROM history WHERE user_id = ?').run(req.user.id);
+      res.json({ success: true, message: 'Riwayat aktivitas berhasil dihapus' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────
+  // === ENDPOINT: Analyze Clips (server-side, used by frontend) ===
+  // ─────────────────────────────────────────────────────────
+  app.post("/api/analyze-clips", authMiddleware, express.json(), async (req: any, res) => {
+    try {
+      const { videoUrl, videoTitle, transcript, count } = req.body;
+      if (!videoUrl || !transcript) return res.status(400).json({ error: "videoUrl dan transcript wajib diisi" });
+      const clips = await analyzeClipsServer(videoUrl, videoTitle || '', transcript, count || 4, req.user.id);
+      res.json({ clips });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // === ENDPOINT: License System ===
   app.get("/api/license/status", async (req, res) => {
