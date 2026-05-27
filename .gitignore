@@ -30,3 +30,6 @@ package_old.json
 # Databases
 *.sqlite
 *.db
+
+# ENV
+.env
