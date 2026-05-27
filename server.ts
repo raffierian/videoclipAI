@@ -96,6 +96,44 @@ function getOAuthClient(userId: number) {
   );
 }
 
+// === WATCHER GLOBALS ===
+let watcherStatus = {
+  isChecking: false,
+  lastChecked: null as string | null,
+  lastAction: "Idle",
+  logs: [] as string[],
+  paused: false,
+  pauseReason: '' as string,
+  pauseType: '' as '' | 'ai_quota' | 'youtube_quota'
+};
+
+const exhaustedAIKeys = new Set<string>();
+
+const pauseWatcher = (reason: string, type: 'ai_quota' | 'youtube_quota') => {
+  watcherStatus.paused = true;
+  watcherStatus.pauseReason = reason;
+  watcherStatus.pauseType = type;
+  watcherStatus.lastAction = `⏸️ PAUSED: ${reason}`;
+  console.warn(`[Watcher] PAUSED — ${type}: ${reason}`);
+};
+
+const resumeWatcher = () => {
+  watcherStatus.paused = false;
+  watcherStatus.pauseReason = '';
+  watcherStatus.pauseType = '';
+  watcherStatus.lastAction = 'Resumed by user';
+  console.log('[Watcher] Resumed by user.');
+};
+
+const addWatcherLog = (msg: string) => {
+  const time = new Date().toLocaleTimeString();
+  watcherStatus.logs.unshift(`[${time}] ${msg}`);
+  watcherStatus.logs = watcherStatus.logs.slice(0, 10);
+  watcherStatus.lastAction = msg;
+  console.log(`[Watcher] ${msg}`);
+};
+// =======================
+
 // Helper for history
 function saveToHistory(userId: number, entry: any) {
   try {
@@ -940,41 +978,7 @@ async function startServer() {
 
   ffmpeg.setFfmpegPath(resolvedFfmpegPath);
 
-  let watcherStatus = {
-    isChecking: false,
-    lastChecked: null as string | null,
-    lastAction: "Idle",
-    logs: [] as string[],
-    paused: false,
-    pauseReason: '' as string,
-    pauseType: '' as '' | 'ai_quota' | 'youtube_quota'
-  };
-
-  const exhaustedAIKeys = new Set<string>();
-
-  const pauseWatcher = (reason: string, type: 'ai_quota' | 'youtube_quota') => {
-    watcherStatus.paused = true;
-    watcherStatus.pauseReason = reason;
-    watcherStatus.pauseType = type;
-    watcherStatus.lastAction = `⏸️ PAUSED: ${reason}`;
-    console.warn(`[Watcher] PAUSED — ${type}: ${reason}`);
-  };
-
-  const resumeWatcher = () => {
-    watcherStatus.paused = false;
-    watcherStatus.pauseReason = '';
-    watcherStatus.pauseType = '';
-    watcherStatus.lastAction = 'Resumed by user';
-    console.log('[Watcher] Resumed by user.');
-  };
-
-  const addWatcherLog = (msg: string) => {
-    const time = new Date().toLocaleTimeString();
-    watcherStatus.logs.unshift(`[${time}] ${msg}`);
-    watcherStatus.logs = watcherStatus.logs.slice(0, 10);
-    watcherStatus.lastAction = msg;
-    console.log(`[Watcher] ${msg}`);
-  };
+  // Watcher state moved to global scope
 
   // === SERVER-SIDE GEMINI CLIP ANALYSIS ===
   const aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
