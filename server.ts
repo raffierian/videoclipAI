@@ -1041,75 +1041,99 @@ async function startServer() {
 
   async function analyzeClipsServer(videoUrl: string, videoTitle: string, transcript: string, count = 3, userId?: number) {
     const prompt = `
-Anda adalah VIRAL VIDEO EDITOR PROFESIONAL kelas dunia yang bekerja di tim TikTok/YouTube Shorts.
-Anda memiliki pengalaman 10 tahun memotong video panjang menjadi short-form viral content yang mendapatkan jutaan views.
+Anda adalah VIRAL SHORT-FORM VIDEO EDITOR kelas dunia — ahli di TikTok, YouTube Shorts, dan Instagram Reels.
+Anda telah memotong ribuan video panjang menjadi konten short-form viral yang meledak di sosmed dengan jutaan views.
 
 VIDEO INFO:
 - Title: "${videoTitle}"
 - URL: ${videoUrl}
 
-TRANSKRIP (dengan timestamp):
+TRANSKRIP DENGAN TIMESTAMP:
 ${transcript.substring(0, 15000)}
 
-TUGAS: Temukan **${count} momen TERBAIK** dari transkrip di atas yang akan menjadi SHORT VIDEO VIRAL.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TUGAS: Temukan ${count} MOMEN VIRAL TERBAIK dari transkrip di atas.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-## ⚠️ KRITERIA WAJIB VIRAL (HARUS DIPENUHI SEMUA):
+## 🎯 ATURAN TIMESTAMP — SANGAT PENTING:
 
-### 1. DURASI PADAT & OPTIMAL
-- ✅ **10-15 detik** untuk konten looping (momen lucu, reaksi, reveal)
-- ✅ **25-35 detik** untuk tutorial/tips (maksimal!)
-- ❌ TOLAK klip > 40 detik (terlalu panjang, retention drop)
-- ❌ BUANG semua jeda napas, "ehm", "jadi", transisi boring
+### CARA MEMBACA TIMESTAMP:
+Transkrip menggunakan format [HH:MM:SS] di awal setiap kalimat.
+Contoh:
+  [00:02:15] Ini adalah kalimat pertama.
+  [00:02:22] Lanjutan kalimat berikutnya.
 
-### 2. HOOK 3 DETIK PERTAMA (PALING PENTING!)
-Detik 1-3 HARUS langsung:
-- ✅ Visual shocking/menarik (hasil akhir, reaksi kaget, aksi dramatis)
-- ✅ Kalimat pancingan kuat: "Gak nyangka...", "Ternyata...", "Jangan coba ini..."
-- ✅ Pertanyaan yang bikin penasaran: "Kenapa bisa begini?"
-- ❌ JANGAN PERNAH mulai dari: intro, salam, "halo guys", penjelasan panjang
+### ATURAN POTONG WAJIB:
+1. **startTimeSeconds** = timestamp [HH:MM:SS] PERSIS di awal kalimat hook pertama
+   - Ubah HH:MM:SS → total detik: (HH × 3600) + (MM × 60) + SS
+   - ❌ JANGAN mulai di tengah kalimat
+   - ❌ JANGAN mulai 0.5 detik sebelum/sesudah timestamp — gunakan PERSIS nilai integer dari timestamp
 
-### 3. PACING CEPAT (Visual Movement)
-- ✅ Ada perubahan di layar SETIAP 2-3 DETIK:
-  - Ganti angle kamera / Zoom in/out / Gerakan cepat
-  - Reaksi wajah berubah / Aksi/kejadian baru
-- ❌ TOLAK momen statis/diam > 3 detik
+2. **endTimeSeconds** = timestamp kalimat TERAKHIR + estimasi durasi bicara kalimat itu (biasanya +2 sampai +4 detik)
+   - Pastikan kalimat terakhir SELESAI sebelum cut
+   - ❌ JANGAN cut di tengah kata/kalimat
 
-### 4. TARGET METRIK VIRAL
-Pilih HANYA klip yang bisa mencapai:
-- ✅ **Viewed vs Swiped > 70%** (7 dari 10 orang nonton sampai habis)
-- ✅ **Audience Retention > 100%** (orang nonton ulang/loop)
-- ✅ **High Share Potential** (orang mau share ke teman)
+3. **DURASI WAJIB 15–45 DETIK:**
+   - ✅ 15–20 detik: Reaksi, reveal, joke, momen lucu (untuk loop)
+   - ✅ 25–35 detik: Tutorial 1 langkah, tips, demonstrasi singkat
+   - ✅ 35–45 detik: Cerita/drama dengan twist di akhir
+   - ❌ TOLAK klip < 12 detik (terlalu pendek, tidak ada context)
+   - ❌ TOLAK klip > 50 detik (retention drop tajam setelah 45 detik)
 
-### 5. KONTEN YANG VIRAL
-Prioritaskan momen dengan:
-- ✅ **Emosi kuat**: Lucu, kaget, terharu, marah, takjub
-- ✅ **Relatable**: Pengalaman yang banyak orang alami
-- ✅ **Solutif**: Memecahkan masalah sehari-hari (tips/tutorial)
-- ✅ **Unexpected twist**: Plot twist yang bikin "WOW!"
-- ❌ HINDARI: Konten membosankan, terlalu umum, sudah sering dilihat
+## 🔥 KRITERIA VIRAL WAJIB:
 
-### 6. SEAMLESS LOOP (untuk video 10-15 detik)
-- ✅ Akhir video bisa nyambung mulus ke awal
-- ✅ Bikin penonton tidak sadar video sudah loop
+### A. HOOK 3 DETIK PERTAMA — PENENTU SEGALANYA:
+Detik 1-3 harus langsung melompat ke:
+- ✅ Konflik/drama langsung ("Gue hampir kehilangan segalanya karena ini")
+- ✅ Reveal shocking (tunjukkan hasil akhir dulu, baru prosesnya)
+- ✅ Pertanyaan yang memaksa penonton berhenti ("Kenapa gue dibayar 50 juta cuma buat ini?")
+- ✅ Visual/aksi yang tidak biasa, mengejutkan, atau lucu
+- ❌ SKIP semua yang diawali: "Halo", "Hai guys", "Selamat datang", "Hari ini kita akan", intro brand, musik pembuka
 
-## FRAMEWORK: Hook → Tension → Payoff
-1. **HOOK (Detik 1-3)**: Langsung momen paling menarik
-2. **TENSION (Detik 3-30)**: Build up yang bikin penasaran
-3. **PAYOFF (Detik terakhir)**: Klimaks yang memuaskan
+### B. STRUCTURE WAJIB (Hook → Build-up → Payoff):
+1. **HOOK** (detik 0-5): Paling menarik, langsung membuat penonton freeze
+2. **BUILD-UP** (detik 5-35): Konten inti, informatif/entertaining, pacing cepat
+3. **PAYOFF** (detik 35-akhir): Klimaks, twist, punchline, atau CTA yang kuat ("Comment 'mau' kalau penasaran")
 
-## FORMAT OUTPUT:
-- Title: Clickbait SINGKAT (maks 40 karakter), pakai emoji
-- Hook: Kalimat pembuka yang langsung "mencolok" di 1 detik pertama
-- Description: Kalimat MEMANCING KOMENTAR (contoh: "Setuju gak? 🤔")
-- Tags: 5 hashtag trending + niche
-- viralScore: Skor 1-100 (HANYA beri skor > 80 jika SEMUA kriteria terpenuhi)
+### C. FAKTOR PENENTU VIRAL:
+Prioritaskan (secara berurutan):
+1. 🎭 **Emosi Kuat** — penonton tertawa, kaget, terharu, atau marah (paling viral)
+2. 🔁 **Loop Potential** — akhir video nyambung ke awal (retention > 100%)
+3. 💡 **Value Tinggi** — tips/info yang belum banyak orang tahu
+4. 😮 **Unexpected Twist** — akhir yang tidak terduga
+5. 🤝 **Relatable** — pengalaman yang banyak orang pernah rasakan
 
-## ⚠️ PENTING:
-- Jika tidak ada klip yang memenuhi SEMUA kriteria, lebih baik return SEDIKIT klip berkualitas tinggi
-- JANGAN paksa buat klip dari momen yang biasa-biasa saja
-- Prioritas: KUALITAS > KUANTITAS
+### D. TOLAK MOMEN INI:
+- ❌ Intro channel/branding > 3 detik
+- ❌ Transisi musik panjang tanpa konten
+- ❌ Penjelasan bertele-tele tanpa aksi
+- ❌ Momen diam/pause > 2 detik (kecuali dramatic pause intentional)
+- ❌ Konten yang sudah ada ribuan versi serupa di platform
 
-Respons WAJIB dalam Bahasa Indonesia. Format JSON murni.
+## 📊 SCORING SYSTEM:
+Gunakan sub-skor berikut (masing-masing 0-100), viralScore = rata-rata tertimbang:
+- hookScore (40%): Seberapa kuat 3 detik pertama menarik perhatian
+- retentionScore (30%): Kemungkinan penonton nonton sampai akhir
+- shareabilityScore (20%): Kemungkinan penonton share/forward
+- loopabilityScore (10%): Apakah akhir bisa loop ke awal dengan mulus
+
+Rumus: viralScore = (hookScore×0.4) + (retentionScore×0.3) + (shareabilityScore×0.2) + (loopabilityScore×0.1)
+Bulatkan ke integer.
+
+## 📝 STANDAR METADATA PER FIELD:
+- **title**: Maksimal 80 karakter. Pakai angka/emoji. Contoh: "💀 Gue Rugi 50 Juta Gara-gara Ini!"
+- **hook**: Kalimat persis yang akan muncul di detik pertama video (copy dari transkrip jika ada)
+- **description**: 2-3 kalimat. Kalimat terakhir WAJIB ajak interaksi: "Setuju? Comment di bawah! 👇"
+- **tags**: Array 8-12 hashtag. Campurkan: 3 broad (#viral #shorts #fyp) + 5 niche topik + 2 lokal/bahasa
+- **clipType**: Salah satu dari: "talking_head" | "tutorial" | "reaction" | "prank" | "drama" | "reveal" | "lifestyle"
+- **platformOptimal**: Salah satu dari: "youtube_shorts" | "tiktok" | "instagram_reels" | "all"
+
+## ⚠️ INGAT — QUALITY OVER QUANTITY:
+- Lebih baik return 1 klip sempurna daripada 3 klip mediocre
+- HANYA include klip dengan viralScore ≥ 75
+- Jika semua momen jelek, return array kosong []
+
+Respons DALAM BAHASA INDONESIA. Output HANYA JSON murni.
     `;
     let userSettings = { gemini_key: '', openai_key: '', groq_key: '' };
     if (userId) {
@@ -1141,22 +1165,36 @@ Respons WAJIB dalam Bahasa Indonesia. Format JSON murni.
       return Array.isArray(parsed) ? parsed : (parsed.clips || Object.values(parsed)[0] || []);
     };
 
-    const enhancedPrompt = prompt + `\n\nSANGAT PENTING: Output Anda HARUS berupa JSON valid dengan bentuk object yang membungkus array clips seperti ini:
+    const enhancedPrompt = prompt + `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMAT JSON OUTPUT — WAJIB PERSIS SEPERTI INI:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "clips": [
     {
-      "title": "Judul Clickbait",
-      "hook": "Hook kalimat 3 detik pertama",
-      "description": "Deskripsi YouTube",
-      "tags": ["#roblox", "#viral"],
-      "viralScore": 95,
-      "startTimeSeconds": 15,
-      "endTimeSeconds": 30,
-      "viralAnalysis": "Alasan klip ini viral..."
+      "title": "💀 Gue Rugi 50 Juta Gara-gara Ini!",
+      "hook": "Kalimat persis yang ada di transkrip detik pertama",
+      "description": "Deskripsi 2-3 kalimat. Kalimat terakhir ajak interaksi. Setuju? Comment 👇",
+      "tags": ["#viral", "#shorts", "#fyp", "#indonesia", "#tips", "#lifehack", "#keren", "#trending"],
+      "viralScore": 88,
+      "hookScore": 92,
+      "retentionScore": 85,
+      "shareabilityScore": 80,
+      "loopabilityScore": 75,
+      "startTimeSeconds": 125,
+      "endTimeSeconds": 158,
+      "clipType": "talking_head",
+      "platformOptimal": "youtube_shorts",
+      "viralAnalysis": "Alasan konkret mengapa klip ini akan viral..."
     }
   ]
 }
-Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
+
+ATURAN KETAT:
+- startTimeSeconds dan endTimeSeconds HARUS integer (detik, bukan milidetik)
+- Durasi (endTimeSeconds - startTimeSeconds) HARUS antara 12 dan 50
+- JANGAN gunakan nilai di luar range timestamp yang ada di transkrip
+- startTimeSeconds HARUS tepat di awal kalimat dari transkrip (sesuai timestamp [HH:MM:SS])
+- endTimeSeconds HARUS setelah kalimat terakhir selesai diucapkan`;
 
     // 0. Try OLLAMA (100% Local, Free, Unlimited) if enabled
     if (ollamaEnabled) {
@@ -1314,88 +1352,164 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     throw new Error(exhaustMsg);
   }
 
+
+  // === HELPER: Snap clip boundaries to nearest complete sentence in transcript ===
+  function snapToNearestSentence(startSec: number, endSec: number, transcript: string): { start: number; end: number } {
+    // Parse all timestamps from transcript format [HH:MM:SS]
+    const tsRegex = /\[(\d{2}):(\d{2}):(\d{2})\]/g;
+    const timestamps: number[] = [];
+    let match;
+    while ((match = tsRegex.exec(transcript)) !== null) {
+      const totalSec = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3]);
+      timestamps.push(totalSec);
+    }
+    if (timestamps.length === 0) return { start: startSec, end: endSec };
+
+    // Snap start: find the nearest timestamp <= startSec (don't cut mid-sentence)
+    const beforeStart = timestamps.filter(t => t <= startSec);
+    const snappedStart = beforeStart.length > 0 ? beforeStart[beforeStart.length - 1] : timestamps[0];
+
+    // Snap end: find the nearest timestamp >= (endSec - 3) and add estimated speaking time
+    const afterEnd = timestamps.filter(t => t >= endSec - 3);
+    let snappedEnd: number;
+    if (afterEnd.length > 0) {
+      // Add +3 seconds after the last sentence timestamp to allow it to finish
+      snappedEnd = afterEnd[0] + 3;
+    } else {
+      snappedEnd = endSec;
+    }
+
+    // Enforce 15-59 second duration (YouTube Shorts max is 59s)
+    const duration = snappedEnd - snappedStart;
+    if (duration < 12) snappedEnd = snappedStart + 15; // minimum 15s
+    if (duration > 59) snappedEnd = snappedStart + 59; // hard cap at 59s for YT Shorts
+
+    return { start: Math.round(snappedStart), end: Math.round(snappedEnd) };
+  }
+
+  // === HELPER: Encode video to 1080x1920 portrait with face tracking + loudnorm audio ===
+  async function encodePortraitClip(inputPath: string, outputPath: string, faceTimeline: Awaited<ReturnType<typeof runFaceTimeline>>): Promise<void> {
+    // Build crop filter: face-tracked or center crop
+    let cropFilter: string;
+    if (faceTimeline) {
+      const cmdsEsc = faceTimeline.cmdsPath.replace(/\\/g, '/').replace(':', '\\:');
+      cropFilter = `sendcmd=f='${cmdsEsc}',crop=${faceTimeline.crop_w}:${faceTimeline.crop_h}`;
+    } else {
+      // Smart center crop: prefer face area (center-top 9/16 of landscape)
+      cropFilter = 'crop=ih*9/16:ih';
+    }
+
+    // Full filter chain:
+    // 1. Apply face-tracked or center crop
+    // 2. Scale to exactly 1080x1920 (padding if needed to keep aspect)
+    // 3. Ensure 30fps
+    // 4. Audio loudness normalization to -14 LUFS (streaming platform standard)
+    const complexFilter = [
+      `[0:v]${cropFilter},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30[vout]`,
+      `[0:a]loudnorm=I=-14:LRA=11:TP=-1.5[aout]`
+    ].join(';');
+
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(inputPath)
+        .complexFilter(complexFilter)
+        .outputOptions([
+          '-map', '[vout]',
+          '-map', '[aout]',
+          '-c:v', 'libx264',
+          '-crf', '22',           // Balanced quality/size for social platforms
+          '-preset', 'medium',
+          '-profile:v', 'high',
+          '-level', '4.2',
+          '-pix_fmt', 'yuv420p',
+          '-movflags', '+faststart', // For streaming
+          '-c:a', 'aac',
+          '-b:a', '192k',
+          '-ar', '48000',
+          '-ac', '2',             // Stereo
+          '-t', '59',             // Hard cap: YouTube Shorts max 59 seconds
+        ])
+        .save(outputPath)
+        .on('end', () => resolve())
+        .on('error', reject);
+    });
+  }
+
   // === UPLOAD A SINGLE CLIP TO YOUTUBE SHORTS ===
   async function uploadClipToYoutube(
     youtubeClient: any,
     sourceUrl: string,
     clip: { title: string; hook: string; description: string; tags: string[]; startTimeSeconds: number; endTimeSeconds: number },
-    userId: number
+    userId: number,
+    transcript?: string
   ) {
-    const startSec = clip.startTimeSeconds;
-    const endSec = clip.endTimeSeconds;
+    // Snap timestamps to nearest sentence boundaries in transcript
+    let { start: startSec, end: endSec } = transcript
+      ? snapToNearestSentence(clip.startTimeSeconds, clip.endTimeSeconds, transcript)
+      : { start: clip.startTimeSeconds, end: clip.endTimeSeconds };
+
     const startIso = new Date(startSec * 1000).toISOString().substring(11, 19);
     const endIso = new Date(endSec * 1000).toISOString().substring(11, 19);
     const sectionStr = `*${startIso}-${endIso}`;
+    console.log(`[Autopilot YT] Clip window: ${startIso} -> ${endIso} (${endSec - startSec}s)`);
 
     // 1. Download clip segment
     const tempSegPath = path.join(os.tmpdir(), `autopilot_seg_${Date.now()}.mp4`);
     await downloadYoutubeSegment(sourceUrl, sectionStr, tempSegPath);
 
-    // 2. Re-encode portrait (9:16) with face tracking + TikTok subtitles
+    // 2. Face-tracking + portrait encode 1080x1920 / 30fps / loudnorm
     const tempOutPath = path.join(os.tmpdir(), `autopilot_out_${Date.now()}.mp4`);
     const faceTimeline = await runFaceTimeline(tempSegPath);
-    const cropFilter = faceTimeline
-      ? `sendcmd=f='${faceTimeline.cmdsPath.replace(/\\/g, '/').replace(':', '\\:')}',crop=${faceTimeline.crop_w}:${faceTimeline.crop_h}`
-      : 'crop=ih*9/16:ih';
 
-    // Get video info for subtitles (DISABLED: User requested to turn off auto-titles for Auto-Pilot as they cover the video)
-    // const clipInfo = await youtubedl(sourceUrl, {
-    //   dumpSingleJson: true, noCheckCertificates: true, noWarnings: true,
-    //   extractorArgs: 'youtube:player_client=android'
-    // } as any) as any;
-    // const subInfo = await prepareSubtitles(clipInfo, clip.startTimeSeconds, 'tiktok');
-    const subInfo: any = null;
-
-    // Build filter chain: face crop (subtitles disabled)
-    const filters: string[] = [cropFilter];
-    if (subInfo) {
-      filters.push(`subtitles='${(subInfo as any).ffmpegPath}':force_style='${getSubtitleStyle('tiktok')}'`);
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg(tempSegPath)
-        .videoFilters(filters)
-        .outputOptions([
-          '-c:v libx264',
-          '-crf 18',  // Kualitas lebih tinggi (dari 20 ke 18, semakin rendah semakin bagus)
-          '-preset medium',  // Preset lebih baik (dari veryfast ke medium)
-          '-profile:v high',  // Profile high untuk kualitas maksimal
-          '-level 4.2',
-          '-pix_fmt yuv420p',
-          '-movflags +faststart',
-          '-c:a aac',
-          '-b:a 256k',  // Audio bitrate lebih tinggi (dari 192k ke 256k)
-          '-ar 48000'  // Sample rate 48kHz
-        ])
-        .save(tempOutPath)
-        .on('end', () => {
-          if (subInfo && fs.existsSync(subInfo.rawPath)) fs.unlinkSync(subInfo.rawPath);
-          resolve();
-        })
-        .on('error', reject);
-    });
+    await encodePortraitClip(tempSegPath, tempOutPath, faceTimeline);
 
     if (fs.existsSync(tempSegPath)) fs.unlinkSync(tempSegPath);
     if (faceTimeline && fs.existsSync(faceTimeline.cmdsPath)) fs.unlinkSync(faceTimeline.cmdsPath);
 
-    // 3. Upload video to YouTube Shorts
+    // 3. Build YouTube Shorts optimized metadata
+    // Title: max 100 chars, hook sentence for discoverability
+    const ytTitle = clip.title.substring(0, 97) + (clip.title.length > 97 ? '...' : '');
+
+    // Description: structured for YT algorithm (hook + description + CTA + hashtags)
+    // #Shorts MUST be in title or description for YouTube to classify as a Short
+    const cleanTags = (clip.tags || []).map((t: string) => t.startsWith('#') ? t : `#${t}`).join(' ');
+    const ytDescription = [
+      clip.hook,
+      '',
+      clip.description,
+      '',
+      '👇 Komen pendapat kamu di bawah!',
+      '',
+      `${cleanTags} #Shorts`,
+    ].join('\n');
+
+    // Tags: YouTube allows max 500 chars total
+    const ytTags = [...(clip.tags || []).map((t: string) => t.replace(/^#/, '')), 'Shorts', 'viral', 'viralclipai']
+      .slice(0, 20);
+
+    // 4. Upload video to YouTube Shorts
     const response = await youtubeClient.videos.insert({
       part: ['snippet', 'status'],
       requestBody: {
         snippet: {
-          title: clip.title.substring(0, 100),
-          description: `${clip.description}\n\n${clip.hook}\n\n#shorts #viralclipai`,
-          tags: clip.tags,
-          categoryId: '22',
+          title: ytTitle,
+          description: ytDescription,
+          tags: ytTags,
+          categoryId: '22',         // People & Blogs — best for viral content
+          defaultLanguage: 'id',
+          defaultAudioLanguage: 'id',
         },
-        status: { privacyStatus: 'public', selfDeclaredMadeForKids: false },
+        status: {
+          privacyStatus: 'public',
+          selfDeclaredMadeForKids: false,
+          madeForKids: false,
+        },
       },
       media: { body: fs.createReadStream(tempOutPath) },
     });
 
     const videoId = response.data.id!;
 
-    // 4. Auto-generate and upload clickbait thumbnail
+    // 5. Auto-generate and upload clickbait thumbnail
     try {
       const thumbPath = await generateThumbnailPy(tempOutPath, clip.title, clip.hook);
       if (thumbPath) {
@@ -1413,63 +1527,53 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     return videoId;
   }
 
-  // === UPLOAD A SINGLE CLIP TO FACEBOOK PAGE ===
+  // === UPLOAD A SINGLE CLIP TO FACEBOOK REELS ===
   async function uploadClipToFacebook(
     sourceUrl: string,
     clip: { title: string; hook: string; description: string; tags: string[]; startTimeSeconds: number; endTimeSeconds: number },
     userId: number,
-    fbSettings: { fb_page_access_token: string; fb_page_id: string }
+    fbSettings: { fb_page_access_token: string; fb_page_id: string },
+    transcript?: string
   ) {
-    const startSec = clip.startTimeSeconds;
-    const endSec = clip.endTimeSeconds;
+    // Snap timestamps to nearest sentence boundaries in transcript
+    let { start: startSec, end: endSec } = transcript
+      ? snapToNearestSentence(clip.startTimeSeconds, clip.endTimeSeconds, transcript)
+      : { start: clip.startTimeSeconds, end: clip.endTimeSeconds };
+
     const startIso = new Date(startSec * 1000).toISOString().substring(11, 19);
     const endIso = new Date(endSec * 1000).toISOString().substring(11, 19);
     const sectionStr = `*${startIso}-${endIso}`;
+    console.log(`[Autopilot FB] Clip window: ${startIso} -> ${endIso} (${endSec - startSec}s)`);
 
     // 1. Download clip segment
     const tempSegPath = path.join(os.tmpdir(), `autopilot_fb_seg_${Date.now()}.mp4`);
     await downloadYoutubeSegment(sourceUrl, sectionStr, tempSegPath);
 
-    // 2. Re-encode portrait (9:16) with face tracking (no subtitles for auto-pilot as requested before)
+    // 2. Encode portrait 1080x1920 with face tracking + loudnorm
     const tempOutPath = path.join(os.tmpdir(), `autopilot_fb_out_${Date.now()}.mp4`);
     const faceTimeline = await runFaceTimeline(tempSegPath);
-    const cropFilter = faceTimeline
-      ? `sendcmd=f='${faceTimeline.cmdsPath.replace(/\\/g, '/').replace(':', '\\:')}',crop=${faceTimeline.crop_w}:${faceTimeline.crop_h}`
-      : 'crop=ih*9/16:ih';
 
-    const filters: string[] = [cropFilter];
-
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg(tempSegPath)
-        .videoFilters(filters)
-        .outputOptions([
-          '-c:v libx264',
-          '-crf 18',
-          '-preset medium',
-          '-profile:v high',
-          '-level 4.2',
-          '-pix_fmt yuv420p',
-          '-movflags +faststart',
-          '-c:a aac',
-          '-b:a 256k',
-          '-ar 48000'
-        ])
-        .save(tempOutPath)
-        .on('end', () => {
-          resolve();
-        })
-        .on('error', reject);
-    });
+    await encodePortraitClip(tempSegPath, tempOutPath, faceTimeline);
 
     if (fs.existsSync(tempSegPath)) fs.unlinkSync(tempSegPath);
     if (faceTimeline && fs.existsSync(faceTimeline.cmdsPath)) fs.unlinkSync(faceTimeline.cmdsPath);
 
-    // 3. Upload to Facebook Page via native FormData
+    // 3. Build Facebook Reels metadata
+    const cleanTags = (clip.tags || []).map((t: string) => t.startsWith('#') ? t : `#${t}`).slice(0, 5).join(' ');
+    const fbDescription = [
+      clip.hook,
+      '',
+      clip.description,
+      '',
+      cleanTags,
+    ].join('\n');
+
+    // 4. Upload to Facebook Page as Reel via native FormData
     const formData = new FormData();
     const fileBlob = new Blob([fs.readFileSync(tempOutPath)]);
     formData.append('source', fileBlob, 'video.mp4');
-    formData.append('title', clip.title);
-    formData.append('description', `${clip.description}\n\n${clip.hook}\n\n#shorts #viralclipai`);
+    formData.append('title', clip.title.substring(0, 255));
+    formData.append('description', fbDescription);
     formData.append('access_token', fbSettings.fb_page_access_token);
 
     const fbResponse = await fetch(`https://graph.facebook.com/v19.0/${fbSettings.fb_page_id}/videos`, {
@@ -1489,6 +1593,20 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
     if (fs.existsSync(tempOutPath)) fs.unlinkSync(tempOutPath);
     return videoId;
   }
+
+  // Helper: detect YouTube Data API quota exhaustion from any error object
+  const isYouTubeQuotaError = (err: any): boolean => {
+    const msg = (err?.message || '').toLowerCase();
+    const reason = err?.errors?.[0]?.reason || '';
+    return (
+      reason === 'quotaExceeded' ||
+      reason === 'dailyLimitExceeded' ||
+      msg.includes('quotaexceeded') ||
+      msg.includes('daily limit exceeded') ||
+      msg.includes('quota') ||
+      (err?.code === 403 && (msg.includes('quota') || msg.includes('limit')))
+    );
+  };
 
   const runWatcher = async () => {
     if (watcherStatus.isChecking) return;
@@ -1625,10 +1743,13 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                 const hasFb = fbSettings && fbSettings.fb_page_access_token && fbSettings.fb_page_id;
 
                 // 3. Upload each clip
+                let ytQuotaHit = false;
                 for (const clip of clips) {
+                  if (watcherStatus.paused) break;
+
                   addWatcherLog(`Uploading clip to YouTube: ${clip.title}`);
                   try {
-                    const uploadedId = await uploadClipToYoutube(youtube, sourceUrl, clip, user.id);
+                    const uploadedId = await uploadClipToYoutube(youtube, sourceUrl, clip, user.id, transcript);
                     saveToHistory(user.id, {
                       type: 'auto_process', title: clip.title,
                       url: `https://youtube.com/shorts/${uploadedId}`,
@@ -1637,14 +1758,23 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                     });
                     addWatcherLog(`✅ Uploaded Shorts: https://youtube.com/shorts/${uploadedId}`);
                   } catch (clipErr: any) {
+                    if (isYouTubeQuotaError(clipErr)) {
+                      // Quota habis saat upload — hentikan semua proses dan jangan tandai video sebagai processed
+                      const reason = 'Kuota YouTube API OAuth habis saat upload. Tunggu reset harian atau hubungkan ulang akun YouTube lain di tombol Connect YT.';
+                      pauseWatcher(reason, 'youtube_quota');
+                      addWatcherLog(`⏸️ Watcher dijeda (quota upload): ${reason}`);
+                      saveToHistory(user.id, { type: 'auto_process', title: clip.title, url: sourceUrl, status: 'error', error: clipErr.message });
+                      ytQuotaHit = true;
+                      break; // stop processing further clips
+                    }
                     addWatcherLog(`❌ Failed clip YouTube "${clip.title}": ${clipErr.message}`);
                     saveToHistory(user.id, { type: 'auto_process', title: clip.title, url: sourceUrl, status: 'error', error: clipErr.message });
                   }
 
-                  if (hasFb) {
+                  if (!ytQuotaHit && hasFb) {
                     addWatcherLog(`Uploading clip to Facebook: ${clip.title}`);
                     try {
-                      const fbUploadedId = await uploadClipToFacebook(sourceUrl, clip, user.id, fbSettings);
+                      const fbUploadedId = await uploadClipToFacebook(sourceUrl, clip, user.id, fbSettings, transcript);
                       saveToHistory(user.id, {
                         type: 'auto_process_facebook', title: clip.title,
                         url: `https://facebook.com/${fbUploadedId}`,
@@ -1658,7 +1788,18 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
                     }
                   }
                 }
-                
+
+                // Kalau quota habis saat upload — jangan mark sebagai processed, biarkan di-retry nanti
+                if (ytQuotaHit || watcherStatus.paused) {
+                  if (parentHistoryId) {
+                    db.prepare("UPDATE history SET status = 'pending', details = ? WHERE id = ?").run(
+                      JSON.stringify({ error: 'YouTube API quota habis saat upload, akan dicoba ulang setelah quota reset.' }),
+                      parentHistoryId
+                    );
+                  }
+                  return; // hentikan seluruh watcher run
+                }
+
                 // Update parent video status to success!
                 if (parentHistoryId) {
                   db.prepare("UPDATE history SET status = 'success' WHERE id = ?").run(parentHistoryId);
@@ -1676,15 +1817,13 @@ Pastikan startTimeSeconds dan endTimeSeconds adalah ANGKA INTEGER.`;
               }
             }
           } catch (chanErr: any) {
-            const errMsg = chanErr.message || '';
-            const isYoutubeQuota = errMsg.includes('quota') || errMsg.includes('quotaExceeded') || chanErr?.code === 403;
-            if (isYoutubeQuota) {
+            if (isYouTubeQuotaError(chanErr)) {
               const reason = 'Kuota YouTube API OAuth habis. Tunggu reset harian, atau hubungkan ulang akun YouTube lain di tombol Connect YT.';
               pauseWatcher(reason, 'youtube_quota');
               addWatcherLog(`⏸️ Watcher dijeda: ${reason}`);
               return;
             } else {
-              addWatcherLog(`Error on channel ${channelId}: ${errMsg}`);
+              addWatcherLog(`Error on channel ${channelId}: ${chanErr.message || chanErr}`);
             }
           }
         }
