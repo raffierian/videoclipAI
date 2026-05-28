@@ -70,18 +70,48 @@ const youtubedl = function(url: string, flags: any = {}) {
   });
 };
 
-async function downloadYoutubeSegment(url: string, sectionStr: string, outputPath: string) {
-  await youtubedl(url, {
-    format: 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
-    mergeOutputFormat: 'mp4',
-    downloadSections: sectionStr,
-    forceKeyframesAtCuts: true,
-    output: outputPath,
-    noWarnings: true,
-    noCheckCertificates: true,
-    extractorArgs: 'youtube:player_client=android',
-    ffmpegLocation: resolvedFfmpegPath
-  } as any);
+const safeUnlink = (filePath?: string | null) => {
+  if (!filePath) return;
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch {}
+};
+
+const cleanupClipFiles = (cleanup?: { rawSubPath?: string | null; cmdsPath?: string | null } | null, ...paths: Array<string | null | undefined>) => {
+  safeUnlink(cleanup?.rawSubPath);
+  safeUnlink(cleanup?.cmdsPath);
+  paths.forEach(safeUnlink);
+};
+
+const getQualityHeight = (quality?: string | null) => {
+  const height = Number(String(quality || '').replace(/[^0-9]/g, ''));
+  return [360, 480, 720, 1080].includes(height) ? height : 720;
+};
+
+const getYtdlFormat = (quality?: string | null, preferMp4 = false) => {
+  const height = getQualityHeight(quality);
+  const ext = preferMp4 ? '[ext=mp4]' : '';
+  const audio = preferMp4 ? '[ext=m4a]' : '';
+  return `bestvideo[height<=${height}]${ext}+bestaudio${audio}/best[height<=${height}]${ext}/best`;
+};
+
+async function downloadYoutubeSegment(url: string, sectionStr: string, outputPath: string, quality?: string | null) {
+  try {
+    await youtubedl(url, {
+      format: getYtdlFormat(quality),
+      mergeOutputFormat: 'mp4',
+      downloadSections: sectionStr,
+      forceKeyframesAtCuts: true,
+      output: outputPath,
+      noWarnings: true,
+      noCheckCertificates: true,
+      extractorArgs: 'youtube:player_client=android',
+      ffmpegLocation: resolvedFfmpegPath
+    } as any);
+  } catch (error) {
+    safeUnlink(outputPath);
+    throw error;
+  }
 }
 
 function getOAuthClient(userId: number) {
@@ -522,8 +552,18 @@ function getSubtitleStyle(captionStyle: 'normal' | 'tiktok'): string {
 const venvPy = (() => {
   const isPackaged = __dirname.includes('app.asar');
   const appRoot = isPackaged ? path.join(__dirname, '..', '..') : path.join(__dirname, '..');
-  const p = path.join(appRoot, '.venv', 'Scripts', 'python.exe');
-  return fs.existsSync(p) ? p : 'python';
+  const candidates = isPackaged
+    ? [
+        path.join(appRoot, 'app.asar.unpacked', 'python_env', 'Scripts', 'python.exe'),
+        path.join(appRoot, 'app.asar.unpacked', 'python_env', 'bin', 'python'),
+      ]
+    : [
+        path.join(appRoot, 'python_env', 'Scripts', 'python.exe'),
+        path.join(appRoot, 'python_env', 'bin', 'python'),
+        path.join(appRoot, '.venv', 'Scripts', 'python.exe'),
+        path.join(appRoot, '.venv', 'bin', 'python'),
+      ];
+  return candidates.find(p => fs.existsSync(p)) || 'python';
 })();
 
 function spawnPython(args: string[], timeoutMs = 120000): Promise<string | null> {
@@ -720,11 +760,19 @@ async function processClipVideo(
     }
   }
 
-  await new Promise<void>((resolve, reject) => {
-    job.save(outputPath)
-      .on('end', () => resolve())
-      .on('error', (err) => reject(err));
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      job.save(outputPath)
+        .on('end', () => resolve())
+        .on('error', (err) => reject(err));
+    });
+  } catch (err) {
+    cleanupClipFiles({
+      rawSubPath: subInfo ? subInfo.rawPath : null,
+      cmdsPath: faceTimeline ? faceTimeline.cmdsPath : null
+    }, outputPath);
+    throw err;
+  }
 
   return {
     rawSubPath: subInfo ? subInfo.rawPath : null,
@@ -1981,29 +2029,34 @@ ATURAN KETAT:
       res.setHeader("Content-Type", "video/mp4");
       res.setHeader("Content-Disposition", contentDisposition(`clip_${title}.mp4`));
 
-      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+      let tempVideoPath: string | null = null;
+      let tempOutPath: string | null = null;
+      let cleanup: { rawSubPath: string | null; cmdsPath: string | null } | null = null;
+      try {
+        tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
+        await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath, quality as string);
 
-      const tempOutPath = path.join(os.tmpdir(), `clip_out_${Date.now()}.mp4`);
-      const cleanup = await processClipVideo(tempVideoPath, tempOutPath, {
-        format: format as string,
-        videoMode: videoMode as string,
-        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
-        captionStyle: captionStyle as 'normal' | 'tiktok',
-        startSec,
-        info,
-        userId: req.user.id,
-        subFontName: subFontName as string,
-        subFontSize: subFontSize ? Number(subFontSize) : undefined,
-        subHighlightColor: subHighlightColor as string
-      });
+        tempOutPath = path.join(os.tmpdir(), `clip_out_${Date.now()}.mp4`);
+        cleanup = await processClipVideo(tempVideoPath, tempOutPath, {
+          format: format as string,
+          videoMode: videoMode as string,
+          useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+          captionStyle: captionStyle as 'normal' | 'tiktok',
+          startSec,
+          info,
+          userId: req.user.id,
+          subFontName: subFontName as string,
+          subFontSize: subFontSize ? Number(subFontSize) : undefined,
+          subHighlightColor: subHighlightColor as string
+        });
+      } catch (err) {
+        cleanupClipFiles(cleanup, tempVideoPath, tempOutPath);
+        throw err;
+      }
 
       res.sendFile(tempOutPath, (err) => {
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempOutPath)) fs.unlinkSync(tempOutPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempOutPath);
         saveToHistory(req.user.id, { type: 'download', title, url, status: err ? 'error' : 'success' });
       });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -2034,23 +2087,31 @@ ATURAN KETAT:
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+      let tempVideoPath: string | null = null;
+      let tempPath: string | null = null;
+      let cleanup: { rawSubPath: string | null; cmdsPath: string | null } | null = null;
+      try {
+        tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
+        await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath, quality as string);
 
-      const tempPath = path.join(os.tmpdir(), `temp_upload_${Date.now()}.mp4`);
-      const cleanup = await processClipVideo(tempVideoPath, tempPath, {
-        format: format as string,
-        videoMode: videoMode as string,
-        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
-        captionStyle: captionStyle as 'normal' | 'tiktok',
-        startSec,
-        info,
-        userId: req.user.id,
-        subFontName,
-        subFontSize: subFontSize ? Number(subFontSize) : undefined,
-        subHighlightColor
-      });
+        tempPath = path.join(os.tmpdir(), `temp_upload_${Date.now()}.mp4`);
+        cleanup = await processClipVideo(tempVideoPath, tempPath, {
+          format: format as string,
+          videoMode: videoMode as string,
+          useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+          captionStyle: captionStyle as 'normal' | 'tiktok',
+          startSec,
+          info,
+          userId: req.user.id,
+          subFontName,
+          subFontSize: subFontSize ? Number(subFontSize) : undefined,
+          subHighlightColor
+        });
+      } catch (err) {
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
+        throw err;
+      }
 
       try {
         const youtube = google.youtube({ version: "v3", auth: userOauth });
@@ -2079,18 +2140,12 @@ ATURAN KETAT:
           console.warn('Thumbnail upload skipped:', thumbErr);
         }
 
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
 
         saveToHistory(req.user.id, { type: 'upload', title, url, videoId, status: 'success' });
         res.json({ success: true, videoId });
       } catch (uploadErr: any) {
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
 
         saveToHistory(req.user.id, { type: 'upload', title, url, status: 'error' });
         res.status(500).json({ error: uploadErr.message });
@@ -2114,23 +2169,31 @@ ATURAN KETAT:
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+      let tempVideoPath: string | null = null;
+      let tempPath: string | null = null;
+      let cleanup: { rawSubPath: string | null; cmdsPath: string | null } | null = null;
+      try {
+        tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
+        await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath, quality as string);
 
-      const tempPath = path.join(os.tmpdir(), `temp_upload_fb_${Date.now()}.mp4`);
-      const cleanup = await processClipVideo(tempVideoPath, tempPath, {
-        format: format as string,
-        videoMode: videoMode as string,
-        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
-        captionStyle: captionStyle as 'normal' | 'tiktok',
-        startSec,
-        info,
-        userId: req.user.id,
-        subFontName,
-        subFontSize: subFontSize ? Number(subFontSize) : undefined,
-        subHighlightColor
-      });
+        tempPath = path.join(os.tmpdir(), `temp_upload_fb_${Date.now()}.mp4`);
+        cleanup = await processClipVideo(tempVideoPath, tempPath, {
+          format: format as string,
+          videoMode: videoMode as string,
+          useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+          captionStyle: captionStyle as 'normal' | 'tiktok',
+          startSec,
+          info,
+          userId: req.user.id,
+          subFontName,
+          subFontSize: subFontSize ? Number(subFontSize) : undefined,
+          subHighlightColor
+        });
+      } catch (err) {
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
+        throw err;
+      }
 
       try {
         const formData = new FormData();
@@ -2153,18 +2216,12 @@ ATURAN KETAT:
         const fbResult = (await fbResponse.json()) as any;
         const videoId = fbResult.id;
 
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
 
         saveToHistory(req.user.id, { type: 'upload_facebook', title, url, videoId, status: 'success' });
         res.json({ success: true, videoId });
       } catch (uploadErr: any) {
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
 
         saveToHistory(req.user.id, { type: 'upload_facebook', title, url, status: 'error', error: uploadErr.message });
         res.status(500).json({ error: uploadErr.message });
@@ -2187,40 +2244,42 @@ ATURAN KETAT:
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+      let tempVideoPath: string | null = null;
+      let tempPath: string | null = null;
+      let cleanup: { rawSubPath: string | null; cmdsPath: string | null } | null = null;
+      try {
+        tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
+        await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath, quality as string);
 
-      const tempPath = path.join(os.tmpdir(), `temp_upload_ig_${Date.now()}.mp4`);
-      const cleanup = await processClipVideo(tempVideoPath, tempPath, {
-        format: format as string,
-        videoMode: videoMode as string,
-        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
-        captionStyle: captionStyle as 'normal' | 'tiktok',
-        startSec,
-        info,
-        userId: req.user.id,
-        subFontName,
-        subFontSize: subFontSize ? Number(subFontSize) : undefined,
-        subHighlightColor
-      });
+        tempPath = path.join(os.tmpdir(), `temp_upload_ig_${Date.now()}.mp4`);
+        cleanup = await processClipVideo(tempVideoPath, tempPath, {
+          format: format as string,
+          videoMode: videoMode as string,
+          useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+          captionStyle: captionStyle as 'normal' | 'tiktok',
+          startSec,
+          info,
+          userId: req.user.id,
+          subFontName,
+          subFontSize: subFontSize ? Number(subFontSize) : undefined,
+          subHighlightColor
+        });
+      } catch (err) {
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
+        throw err;
+      }
 
       try {
         const caption = `${title}\n\n${description}\n\n#shorts #viralclipai`;
         const videoId = await uploadToInstagramReels(tempPath, caption, settings.ig_business_account_id, settings.fb_page_access_token);
 
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
 
         saveToHistory(req.user.id, { type: 'upload_instagram', title, url, videoId, status: 'success' });
         res.json({ success: true, videoId });
       } catch (uploadErr: any) {
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
 
         saveToHistory(req.user.id, { type: 'upload_instagram', title, url, status: 'error', error: uploadErr.message });
         res.status(500).json({ error: uploadErr.message });
@@ -2243,40 +2302,42 @@ ATURAN KETAT:
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
+      let tempVideoPath: string | null = null;
+      let tempPath: string | null = null;
+      let cleanup: { rawSubPath: string | null; cmdsPath: string | null } | null = null;
+      try {
+        tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath);
+        await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath, quality as string);
 
-      const tempPath = path.join(os.tmpdir(), `temp_upload_tt_${Date.now()}.mp4`);
-      const cleanup = await processClipVideo(tempVideoPath, tempPath, {
-        format: format as string,
-        videoMode: videoMode as string,
-        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
-        captionStyle: captionStyle as 'normal' | 'tiktok',
-        startSec,
-        info,
-        userId: req.user.id,
-        subFontName,
-        subFontSize: subFontSize ? Number(subFontSize) : undefined,
-        subHighlightColor
-      });
+        tempPath = path.join(os.tmpdir(), `temp_upload_tt_${Date.now()}.mp4`);
+        cleanup = await processClipVideo(tempVideoPath, tempPath, {
+          format: format as string,
+          videoMode: videoMode as string,
+          useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+          captionStyle: captionStyle as 'normal' | 'tiktok',
+          startSec,
+          info,
+          userId: req.user.id,
+          subFontName,
+          subFontSize: subFontSize ? Number(subFontSize) : undefined,
+          subHighlightColor
+        });
+      } catch (err) {
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
+        throw err;
+      }
 
       try {
         const caption = `${title}\n\n${description}`;
         const videoId = await uploadToTikTok(tempPath, caption, settings.tiktok_access_token);
 
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
 
         saveToHistory(req.user.id, { type: 'upload_tiktok', title, url, videoId, status: 'success' });
         res.json({ success: true, videoId });
       } catch (uploadErr: any) {
-        if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-        if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        cleanupClipFiles(cleanup, tempVideoPath, tempPath);
 
         saveToHistory(req.user.id, { type: 'upload_tiktok', title, url, status: 'error', error: uploadErr.message });
         res.status(500).json({ error: uploadErr.message });
@@ -2305,39 +2366,34 @@ ATURAN KETAT:
       const sectionStr = `*${startIso}-${endIso}`;
 
       const info = await youtubedl(url as string, { dumpSingleJson: true, noCheckCertificates: true, noWarnings: true, extractorArgs: 'youtube:player_client=android' } as any) as any;
-      const ytdlFormat = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best';
-      const tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
-
-      await youtubedl(url as string, {
-        format: ytdlFormat,
-        downloadSections: sectionStr,
-        forceKeyframesAtCuts: true,
-        output: tempVideoPath,
-        noWarnings: true,
-        noCheckCertificates: true,
-        extractorArgs: 'youtube:player_client=android',
-        ffmpegLocation: resolvedFfmpegPath
-      } as any);
-
+      let tempVideoPath: string | null = null;
+      let cleanup: { rawSubPath: string | null; cmdsPath: string | null } | null = null;
       const jobId = Date.now().toString() + Math.random().toString(36).substring(7);
       const finalVideoPath = path.join(schedulerDir, `sched_${jobId}.mp4`);
 
-      const cleanup = await processClipVideo(tempVideoPath, finalVideoPath, {
-        format: format as string,
-        videoMode: videoMode as string,
-        useSubtitles: useSubtitles === 'true' || useSubtitles === true,
-        captionStyle: captionStyle as 'normal' | 'tiktok',
-        startSec,
-        info,
-        userId: req.user.id,
-        subFontName,
-        subFontSize: subFontSize ? Number(subFontSize) : undefined,
-        subHighlightColor
-      });
+      try {
+        tempVideoPath = path.join(os.tmpdir(), `temp_seg_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`);
 
-      if (cleanup.rawSubPath && fs.existsSync(cleanup.rawSubPath)) fs.unlinkSync(cleanup.rawSubPath);
-      if (cleanup.cmdsPath && fs.existsSync(cleanup.cmdsPath)) fs.unlinkSync(cleanup.cmdsPath);
-      if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        await downloadYoutubeSegment(url as string, sectionStr, tempVideoPath, quality as string);
+
+        cleanup = await processClipVideo(tempVideoPath, finalVideoPath, {
+          format: format as string,
+          videoMode: videoMode as string,
+          useSubtitles: useSubtitles === 'true' || useSubtitles === true,
+          captionStyle: captionStyle as 'normal' | 'tiktok',
+          startSec,
+          info,
+          userId: req.user.id,
+          subFontName,
+          subFontSize: subFontSize ? Number(subFontSize) : undefined,
+          subHighlightColor
+        });
+      } catch (err) {
+        cleanupClipFiles(cleanup, tempVideoPath, finalVideoPath);
+        throw err;
+      }
+
+      cleanupClipFiles(cleanup, tempVideoPath);
 
       db.prepare(`
         INSERT INTO scheduler_queue (id, user_id, platform, video_path, title, description, tags, scheduled_time, status)
@@ -2683,7 +2739,7 @@ ATURAN KETAT:
     app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
-  app.listen(PORT, "0.0.0.0", () => console.log(`Server running on http://localhost:${PORT}`));
+  app.listen(PORT, "127.0.0.1", () => console.log(`Server running on http://localhost:${PORT}`));
 }
 
 startServer();

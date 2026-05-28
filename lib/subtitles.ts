@@ -61,14 +61,37 @@ function msToAssTime(ms: number): string {
   return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
 }
 
+function parseSubtitleCues(raw: string): Array<{ start: number; end: number; text: string }> {
+  const normalized = raw.replace(/\r/g, '');
+  const cues: Array<{ start: number; end: number; text: string }> = [];
+  const blocks = normalized.split(/\n\s*\n/);
+
+  for (const block of blocks) {
+    const lines = block.split('\n').map(line => line.trim()).filter(Boolean);
+    if (lines.length === 0) continue;
+    if (lines[0] === 'WEBVTT' || lines[0].startsWith('NOTE')) continue;
+
+    const timeIndex = lines.findIndex(line => line.includes('-->'));
+    if (timeIndex === -1) continue;
+
+    const [startStr, endRaw] = lines[timeIndex].split('-->').map(s => s.trim());
+    const endStr = endRaw.split(/\s+/)[0];
+    const text = lines.slice(timeIndex + 1).join(' ').replace(/<[^>]+>/g, '').trim();
+    if (!text) continue;
+
+    cues.push({ start: parseSrtTime(startStr), end: parseSrtTime(endStr), text });
+  }
+
+  return cues;
+}
+
 export function convertSrtToTikTokAss(
-  rawSRT: string, 
+  rawSRT: string,
   offsetSeconds: number,
   options?: { fontName?: string; fontSize?: number; highlightColor?: string }
 ): string {
-  const lines = rawSRT.split('\n');
+  const cues = parseSubtitleCues(rawSRT);
   let events = '';
-  let i = 0;
 
   const bgrColors: Record<string, string> = {
     yellow: '00FFFF',
@@ -84,68 +107,45 @@ export function convertSrtToTikTokAss(
   const fontName = options?.fontName || 'Impact';
   const fontSize = options?.fontSize || 48;
 
-  while (i < lines.length) {
-    const line = lines[i].trim();
-    if (/^\d+$/.test(line)) {
-      i++;
-      const timeLine = (lines[i] || '').trim();
-      i++;
-      let textLines: string[] = [];
-      while (i < lines.length && lines[i].trim() !== '') {
-        textLines.push(lines[i].trim());
-        i++;
+  for (const cue of cues) {
+    let startMs = cue.start - (offsetSeconds * 1000);
+    let endMs = cue.end - (offsetSeconds * 1000);
+    if (startMs < 0) startMs = 0;
+    if (endMs < 0) endMs = 0;
+
+    const durationMs = endMs - startMs;
+    if (durationMs <= 0) continue;
+
+    const rawWords = cue.text.split(/\s+/).filter(w => w.length > 0);
+    if (rawWords.length === 0) continue;
+
+    const processedWords = rawWords.map(w => {
+      let formatted = w.toUpperCase();
+      const emoji = getWordEmoji(w);
+      if (emoji) {
+        formatted += ` ${emoji}`;
       }
-      i++;
+      return formatted;
+    });
 
-      const text = textLines.join(' ').replace(/<[^>]+>/g, '').trim();
-      if (!text || !timeLine.includes('-->')) continue;
+    const wordCount = processedWords.length;
+    const msPerWord = durationMs / wordCount;
 
-      const [startStr, endStr] = timeLine.split('-->').map(s => s.trim());
-      let startMs = parseSrtTime(startStr) - (offsetSeconds * 1000);
-      let endMs = parseSrtTime(endStr) - (offsetSeconds * 1000);
-      if (startMs < 0) startMs = 0;
-      if (endMs < 0) endMs = 0;
+    for (let w = 0; w < wordCount; w++) {
+      const wordStartMs = startMs + (w * msPerWord);
+      const wordEndMs = Math.min(wordStartMs + msPerWord, endMs);
 
-      const durationMs = endMs - startMs;
-      if (durationMs <= 0) continue;
+      const assStart = msToAssTime(wordStartMs);
+      const assEnd = msToAssTime(wordEndMs);
 
-      // Split into words and add emojis
-      const rawWords = text.split(/\s+/).filter(w => w.length > 0);
-      if (rawWords.length === 0) continue;
-
-      const processedWords = rawWords.map(w => {
-        // Capitalize for punchiness
-        let formatted = w.toUpperCase();
-        const emoji = getWordEmoji(w);
-        if (emoji) {
-          formatted += ` ${emoji}`;
+      const assText = processedWords.map((word, idx) => {
+        if (idx === w) {
+          return `{\\c&H${hlColorBGR}&}${word}{\\c&HFFFFFF&}`;
         }
-        return formatted;
-      });
+        return word;
+      }).join(' ');
 
-      // Calculate time per word
-      const wordCount = processedWords.length;
-      const msPerWord = durationMs / wordCount;
-
-      for (let w = 0; w < wordCount; w++) {
-        const wordStartMs = startMs + (w * msPerWord);
-        const wordEndMs = Math.min(wordStartMs + msPerWord, endMs);
-
-        const assStart = msToAssTime(wordStartMs);
-        const assEnd = msToAssTime(wordEndMs);
-
-        // Build text where the current word is colored dynamically, others are white (\c&HFFFFFF&)
-        const assText = processedWords.map((word, idx) => {
-          if (idx === w) {
-            return `{\\c&H${hlColorBGR}&}${word}{\\c&HFFFFFF&}`;
-          }
-          return word;
-        }).join(' ');
-
-        events += `Dialogue: 0,${assStart},${assEnd},TikTok,,0,0,0,,${assText}\n`;
-      }
-    } else {
-      i++;
+      events += `Dialogue: 0,${assStart},${assEnd},TikTok,,0,0,0,,${assText}\n`;
     }
   }
 
